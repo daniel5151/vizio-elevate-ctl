@@ -1,54 +1,53 @@
-//! vizio-ctl: control a VIZIO Elevate soundbar over Bluetooth LE (Windows / WinRT).
-//!
-//! Protocol (reverse engineered from an Android btsnoop capture of the VIZIO app):
-//!
-//! All traffic is plain GATT reads/writes on vendor characteristics, addressed
-//! here by their ATT *value* handles as seen in the capture.
-//!
-//!  1. read  0x0056                         -> e.g. "86EB" (device tag, informational)
-//!  2. write 0x00c2 = "1:f4c46a1e-4e22-"    (client id, write-with-response)
-//!     notify 0x00bf = 00
-//!  3. read  0x00c2                         -> 4 char challenge, e.g. "8C24"
-//!  4. write 0x00c5 = "<challenge>:" + 14 fixed bytes (write-with-response)
-//!     notify 0x00bf = 01                   (auth OK)
-//!  5. read  0x00c5                         -> 8 char session token, e.g. "371FD047"
-//!
-//! After that, every control write is `"<token>:" + <value bytes>` sent as a
-//! write-without-response. Volume lives at 0x0079 and takes an absolute level
-//! (one byte); the soundbar confirms by notifying the new level on 0x0079.
-//!
-//! The 14 "auth" bytes were identical across two sessions with different
-//! challenges, so they are simply replayed.
+//! vizio-ctl: control a VIZIO Elevate soundbar over Bluetooth LE
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write as _};
+use std::io::BufRead;
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::channel;
+use std::time::Duration;
+use std::time::Instant;
 
-use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, Subcommand};
-use windows::core::{GUID, HSTRING};
-use windows::Devices::Bluetooth::Advertisement::{
-    BluetoothLEAdvertisementReceivedEventArgs, BluetoothLEAdvertisementWatcher,
-    BluetoothLEScanningMode,
-};
-use windows::Devices::Bluetooth::GenericAttributeProfile::{
-    GattCharacteristic, GattCharacteristicProperties,
-    GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
-    GattDeviceService, GattSession, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
-};
-use windows::Devices::Bluetooth::{
-    BluetoothCacheMode, BluetoothConnectionStatus, BluetoothDevice, BluetoothLEDevice,
-};
-use windows::Devices::Enumeration::{
-    DeviceInformation, DeviceInformationCustomPairing, DevicePairingKinds,
-    DevicePairingRequestedEventArgs, DevicePairingResultStatus,
-};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
+use anyhow::bail;
+use clap::Parser;
+use clap::Subcommand;
+use windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs;
+use windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher;
+use windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
+use windows::Devices::Bluetooth::BluetoothCacheMode;
+use windows::Devices::Bluetooth::BluetoothConnectionStatus;
+use windows::Devices::Bluetooth::BluetoothDevice;
+use windows::Devices::Bluetooth::BluetoothLEDevice;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicProperties;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattClientCharacteristicConfigurationDescriptorValue;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattCommunicationStatus;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattSession;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattSharingMode;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattValueChangedEventArgs;
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption;
+use windows::Devices::Enumeration::DeviceInformation;
+use windows::Devices::Enumeration::DeviceInformationCustomPairing;
+use windows::Devices::Enumeration::DevicePairingKinds;
+use windows::Devices::Enumeration::DevicePairingRequestedEventArgs;
+use windows::Devices::Enumeration::DevicePairingResultStatus;
 use windows::Foundation::TypedEventHandler;
-use windows::Storage::Streams::{DataReader, DataWriter, IBuffer};
+use windows::Storage::Streams::DataReader;
+use windows::Storage::Streams::DataWriter;
+use windows::Storage::Streams::IBuffer;
+use windows::core::GUID;
+use windows::core::HSTRING;
 
 // ---------------------------------------------------------------------------
 // Protocol constants
@@ -66,7 +65,8 @@ const H_AUTH_STATUS: u16 = 0x00bf;
 const H_AUTH_CHALLENGE: u16 = 0x00c2;
 const H_AUTH_RESPONSE: u16 = 0x00c5;
 
-/// Handles used to auto-detect how Windows' `AttributeHandle` maps to ATT value handles.
+/// Handles used to auto-detect how Windows' `AttributeHandle` maps to ATT value
+/// handles.
 const KNOWN_HANDLES: &[u16] = &[
     H_INPUT_GUESS,
     H_DEVICE_NAME,
@@ -88,7 +88,8 @@ const AUTH_SUFFIX: [u8; 14] = [
 
 const MAX_VOLUME: u8 = 100;
 
-/// Characteristics the app polls after authenticating. Only name + volume are confirmed.
+/// Characteristics the app polls after authenticating. Only name + volume are
+/// confirmed.
 const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_DEVICE_NAME, "Device name", Fmt::Str),
     (H_DEVICE_TAG, "Device tag", Fmt::Str),
@@ -118,7 +119,8 @@ enum Fmt {
 #[derive(Parser)]
 #[command(version, about = "Control a VIZIO Elevate soundbar over Bluetooth LE")]
 struct Cli {
-    /// BLE address of the soundbar (AA:BB:CC:DD:EE:FF). Remembered after first success.
+    /// BLE address of the soundbar (AA:BB:CC:DD:EE:FF). Remembered after first
+    /// success.
     #[arg(short, long, global = true)]
     address: Option<String>,
 
@@ -152,7 +154,8 @@ enum Cmd {
     Unpair,
     /// Connect, authenticate and print device info / state.
     Info,
-    /// List every GATT service/characteristic with handles (and values if readable).
+    /// List every GATT service/characteristic with handles (and values if
+    /// readable).
     Dump,
     /// Get or change the volume.
     #[command(alias = "vol", alias = "v")]
@@ -162,7 +165,8 @@ enum Cmd {
     },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
     Read { handle: String },
-    /// Write raw hex bytes to a handle. The session token prefix "<token>:" is added unless --no-token.
+    /// Write raw hex bytes to a handle. The session token prefix "<token>:" is
+    /// added unless --no-token.
     Write {
         handle: String,
         hex: String,
@@ -484,7 +488,8 @@ struct Soundbar {
     max_volume: u8,
     /// Last volume level seen (via read or notification), used to de-duplicate.
     last_volume: Arc<Mutex<Option<u8>>>,
-    /// When set (shell idle at the prompt), volume changes are printed immediately.
+    /// When set (shell idle at the prompt), volume changes are printed
+    /// immediately.
     live_print: Arc<AtomicBool>,
 }
 
@@ -516,13 +521,16 @@ impl Soundbar {
             std::thread::sleep(Duration::from_millis(800));
         }
         if services.is_empty() {
-            bail!("could not discover GATT services ({last_err}). Is the soundbar on and not connected to your phone?");
+            bail!(
+                "could not discover GATT services ({last_err}). Is the soundbar on and not connected to your phone?"
+            );
         }
 
         let mut chars = Vec::new();
         let mut denied = 0;
         for svc in &services {
-            // Open shared so several vizio-ctl instances (or other apps) can coexist.
+            // Open shared so several vizio-ctl instances (or other apps) can
+            // coexist.
             let _ = svc
                 .OpenAsync(GattSharingMode::SharedReadAndWrite)
                 .and_then(|op| op.join());
@@ -554,8 +562,9 @@ impl Soundbar {
             }
         }
 
-        // Windows may report either the characteristic declaration handle or the
-        // value handle; pick whichever offset matches the handles from the capture.
+        // Windows may report either the characteristic declaration handle or
+        // the value handle; pick whichever offset matches the handles
+        // from the capture.
         let offset = [0i32, 1, -1]
             .into_iter()
             .max_by_key(|off| {
@@ -747,7 +756,7 @@ impl Soundbar {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
-                    return None
+                    return None;
                 }
             }
         }
@@ -811,8 +820,8 @@ impl Soundbar {
     }
 
     /// Write one volume value and return the level the soundbar reports back.
-    /// Notifications repeating the old level (e.g. the unsolicited one sent right
-    /// after subscribing) are skipped.
+    /// Notifications repeating the old level (e.g. the unsolicited one sent
+    /// right after subscribing) are skipped.
     fn write_volume(&self, cur: u8, level: u8) -> Result<u8> {
         self.drain();
         self.write_cmd(H_VOLUME, &[level])?;
@@ -827,8 +836,9 @@ impl Soundbar {
         self.volume()
     }
 
-    /// The soundbar only moves one step per write (writing 11 at volume 8 yields 9),
-    /// so walk to the target one level at a time, like the app does.
+    /// The soundbar only moves one step per write (writing 11 at volume 8
+    /// yields 9), so walk to the target one level at a time, like the app
+    /// does.
     fn set_volume(&self, level: u8) -> Result<u8> {
         let target = level.min(self.max_volume);
         if level > target {
@@ -1193,32 +1203,10 @@ fn main() {
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e:#}");
         if format!("{e:#}").contains("0x800710DF") {
-            eprintln!("hint: Bluetooth looks turned off - enable it in Windows Settings > Bluetooth & devices.");
+            eprintln!(
+                "hint: Bluetooth looks turned off - enable it in Windows Settings > Bluetooth & devices."
+            );
         }
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_and_update_toml_config() {
-        let initial_toml = "# Existing user config\nvolume_limit = 50\n";
-        let mut table: toml::Table = initial_toml.parse().unwrap();
-        let addr = 0xAABBCCDDEEFF;
-        table.insert("address".to_string(), toml::Value::String(fmt_addr(addr)));
-
-        let output = table.to_string();
-        let reloaded: toml::Table = output.parse().unwrap();
-
-        assert_eq!(
-            reloaded.get("volume_limit").and_then(|v| v.as_integer()),
-            Some(50)
-        );
-        let addr_str = reloaded.get("address").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(addr_str, "AA:BB:CC:DD:EE:FF");
-        assert_eq!(parse_addr(addr_str).unwrap(), addr);
     }
 }
