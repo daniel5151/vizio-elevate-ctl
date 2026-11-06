@@ -29,13 +29,24 @@ use clap::Subcommand;
 const H_INPUT_GUESS: u16 = 0x0052;
 const H_DEVICE_NAME: u16 = 0x0054;
 const H_DEVICE_TAG: u16 = 0x0056;
+const H_POWER_LIGHT: u16 = 0x0064;
 const H_MUTE: u16 = 0x006a;
+const H_AV_DELAY: u16 = 0x006d;
 const H_EQ: u16 = 0x0076;
-const H_SURROUND: u16 = 0x00ab;
 const H_VOLUME: u16 = 0x0079;
 const H_MODE_7C: u16 = 0x007c;
+const H_SPEAKER_COLOR: u16 = 0x007f;
 const H_STATE_82: u16 = 0x0082;
+const H_AUTO_HDMI: u16 = 0x0085;
+const H_LEVEL_BASS: u16 = 0x0089;
+const H_LEVEL_TREBLE: u16 = 0x008c;
 const H_EVENT_8F: u16 = 0x008f;
+const H_LEVEL_CENTER: u16 = 0x0092;
+const H_LEVEL_SUBWOOFER: u16 = 0x0095;
+const H_LEVEL_SURROUND: u16 = 0x0098;
+const H_LEVEL_BALANCE: u16 = 0x009b;
+const H_SURROUND: u16 = 0x00ab;
+const H_ELEVATION_MODE: u16 = 0x00ae;
 const H_AUTH_STATUS: u16 = 0x00bf;
 const H_AUTH_CHALLENGE: u16 = 0x00c2;
 const H_AUTH_RESPONSE: u16 = 0x00c5;
@@ -46,13 +57,24 @@ pub const KNOWN_HANDLES: &[u16] = &[
     H_INPUT_GUESS,
     H_DEVICE_NAME,
     H_DEVICE_TAG,
+    H_POWER_LIGHT,
     H_MUTE,
+    H_AV_DELAY,
     H_EQ,
-    H_SURROUND,
     H_VOLUME,
     H_MODE_7C,
+    H_SPEAKER_COLOR,
     H_STATE_82,
+    H_AUTO_HDMI,
+    H_LEVEL_BASS,
+    H_LEVEL_TREBLE,
     H_EVENT_8F,
+    H_LEVEL_CENTER,
+    H_LEVEL_SUBWOOFER,
+    H_LEVEL_SURROUND,
+    H_LEVEL_BALANCE,
+    H_SURROUND,
+    H_ELEVATION_MODE,
     H_AUTH_STATUS,
     H_AUTH_CHALLENGE,
     H_AUTH_RESPONSE,
@@ -73,24 +95,33 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_MUTE, "Mute", Fmt::Bool),
     (H_EQ, "EQ Mode", Fmt::Eq),
     (H_SURROUND, "Surround Mode", Fmt::Surround),
+    (H_ELEVATION_MODE, "Elevation Mode", Fmt::Elevation),
+    (H_SPEAKER_COLOR, "Speaker Color", Fmt::SpeakerColor),
+    (H_POWER_LIGHT, "Power Light", Fmt::Bool),
+    (H_AUTO_HDMI, "Auto HDMI", Fmt::Bool),
+    (H_AV_DELAY, "AV Delay", Fmt::U8),
+    (H_LEVEL_BASS, "Bass", Fmt::I8),
+    (H_LEVEL_TREBLE, "Treble", Fmt::I8),
+    (H_LEVEL_CENTER, "Center", Fmt::I8),
+    (H_LEVEL_SUBWOOFER, "Subwoofer", Fmt::I8),
+    (H_LEVEL_SURROUND, "Surround Level", Fmt::I8),
+    (H_LEVEL_BALANCE, "Surround Balance", Fmt::I8),
     (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
     (H_INPUT_GUESS, "0x0052 (unknown, maybe input)", Fmt::U8),
     (H_MODE_7C, "0x007c (unknown)", Fmt::U8),
-    (0x0085, "0x0085 (unknown)", Fmt::U8),
     (H_EVENT_8F, "0x008f (unknown)", Fmt::U8),
-    (0x0064, "0x0064 (unknown)", Fmt::U8),
-    (0x007f, "0x007f (unknown)", Fmt::U8),
-    (0x00ae, "0x00ae (unknown)", Fmt::U8),
-    (0x006d, "0x006d (unknown)", Fmt::U8),
 ];
 
 #[derive(Clone, Copy)]
 enum Fmt {
     Str,
     U8,
+    I8,
     Bool,
     Eq,
     Surround,
+    Elevation,
+    SpeakerColor,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +201,75 @@ enum DeviceCmd {
         /// Mode to set (off, on, dual, front). Omit to print current mode.
         mode: Option<SurroundMode>,
     },
+    /// Get or set the elevate speakers position (up, wide, auto).
+    #[command(alias = "elev", alias = "elevation")]
+    Position {
+        /// Mode to set (up, wide, auto). Omit to print current position.
+        mode: Option<ElevationMode>,
+    },
+    /// Get or set the elevate speakers LED color.
+    #[command(alias = "speaker-color", alias = "led-color")]
+    Color {
+        /// Color to set (off, rainbow, light-blue, yellow, purple, white, cyan, magenta). Omit to print current color.
+        color: Option<SpeakerColor>,
+    },
+    /// Get, toggle, or set the power indicator light (LED).
+    #[command(alias = "power-led", alias = "light")]
+    PowerLight {
+        #[command(subcommand)]
+        action: Option<OnOffAction>,
+    },
+    /// Get, toggle, or set auto HDMI input switching.
+    #[command(alias = "hdmi")]
+    AutoHdmi {
+        #[command(subcommand)]
+        action: Option<OnOffAction>,
+    },
+    /// Get or set AV delay (lip sync delay 0-8).
+    #[command(alias = "delay")]
+    AvDelay {
+        /// Delay value to set (0-8). Omit to print current delay.
+        delay: Option<u8>,
+    },
+    /// Get or set audio levels (bass, treble, center, subwoofer, surround, balance).
+    #[command(alias = "level")]
+    Levels {
+        #[command(subcommand)]
+        target: Option<LevelCmd>,
+    },
+    /// Get or set bass level (-10 to +10).
+    Bass {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set treble level (-10 to +10).
+    Treble {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set center channel level (-10 to +10).
+    Center {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set subwoofer level (-10 to +10).
+    #[command(alias = "sub")]
+    Subwoofer {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set surround level (-10 to +10).
+    #[command(alias = "surr-level")]
+    SurroundLevel {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set surround balance (-10 to +10).
+    #[command(alias = "balance")]
+    SurroundBalance {
+        #[arg(allow_negative_numbers = true)]
+        balance: Option<i8>,
+    },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
     Read { handle: String },
     /// Write raw hex bytes to a handle. The session token prefix "<token>:" is
@@ -226,7 +326,8 @@ enum ShellCmd {
         /// Optional target (e.g. "all").
         target: Option<String>,
     },
-    /// Disconnect and release the Bluetooth connection (allowing phone app to connect).
+    /// Disconnect and release the Bluetooth connection (allowing phone app to
+    /// connect).
     #[command(alias = "disc", alias = "release")]
     Disconnect,
     /// Reconnect and re-authenticate with the soundbar.
@@ -381,6 +482,193 @@ impl std::str::FromStr for SurroundMode {
     }
 }
 
+/// Elevation speakers position.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElevationMode {
+    /// Elevation speakers facing up.
+    Up = 0,
+    /// Elevation speakers facing wide.
+    Wide = 1,
+    /// Automatic elevation speakers position.
+    Auto = 2,
+}
+
+impl ElevationMode {
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Up),
+            1 => Some(Self::Wide),
+            2 => Some(Self::Auto),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Up => "Up",
+            Self::Wide => "Wide",
+            Self::Auto => "Auto",
+        }
+    }
+}
+
+impl std::fmt::Display for ElevationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for ElevationMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "0" | "up" => Ok(Self::Up),
+            "1" | "wide" => Ok(Self::Wide),
+            "2" | "auto" => Ok(Self::Auto),
+            _ => bail!("unknown elevation mode {s:?} (expected up, wide, or auto)"),
+        }
+    }
+}
+
+/// Elevate speakers LED color.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeakerColor {
+    /// LED off.
+    Off = 0,
+    /// Rainbow animation effect.
+    #[value(alias = "rainbow-effect", alias = "rainbow_effect")]
+    Rainbow = 1,
+    /// Light blue.
+    #[value(alias = "lightblue", alias = "light_blue")]
+    LightBlue = 2,
+    /// Yellow.
+    Yellow = 3,
+    /// Purple.
+    Purple = 4,
+    /// White.
+    White = 5,
+    /// Cyan.
+    Cyan = 6,
+    /// Magenta.
+    Magenta = 7,
+}
+
+impl SpeakerColor {
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Off),
+            1 => Some(Self::Rainbow),
+            2 => Some(Self::LightBlue),
+            3 => Some(Self::Yellow),
+            4 => Some(Self::Purple),
+            5 => Some(Self::White),
+            6 => Some(Self::Cyan),
+            7 => Some(Self::Magenta),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Rainbow => "Rainbow",
+            Self::LightBlue => "Light Blue",
+            Self::Yellow => "Yellow",
+            Self::Purple => "Purple",
+            Self::White => "White",
+            Self::Cyan => "Cyan",
+            Self::Magenta => "Magenta",
+        }
+    }
+}
+
+impl std::fmt::Display for SpeakerColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for SpeakerColor {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().replace(['-', '_', ' '], "").as_str() {
+            "0" | "off" => Ok(Self::Off),
+            "1" | "rainbow" | "rainboweffect" => Ok(Self::Rainbow),
+            "2" | "lightblue" => Ok(Self::LightBlue),
+            "3" | "yellow" => Ok(Self::Yellow),
+            "4" | "purple" => Ok(Self::Purple),
+            "5" | "white" => Ok(Self::White),
+            "6" | "cyan" => Ok(Self::Cyan),
+            "7" | "magenta" => Ok(Self::Magenta),
+            _ => bail!(
+                "unknown speaker color {s:?} (expected off, rainbow, light-blue, yellow, purple, white, cyan, or magenta)"
+            ),
+        }
+    }
+}
+
+#[derive(Subcommand, Clone)]
+enum OnOffAction {
+    /// Print current state.
+    #[command(alias = "status")]
+    Get,
+    /// Turn on.
+    #[command(alias = "1")]
+    On,
+    /// Turn off.
+    #[command(alias = "0")]
+    Off,
+    /// Toggle state.
+    #[command(alias = "t")]
+    Toggle,
+}
+
+#[derive(Subcommand, Clone)]
+enum LevelCmd {
+    /// Get or set bass level (-10 to +10).
+    Bass {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set treble level (-10 to +10).
+    Treble {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set center level (-10 to +10).
+    Center {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set subwoofer level (-10 to +10).
+    #[command(alias = "sub")]
+    Subwoofer {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set surround level (-10 to +10).
+    #[command(alias = "surr")]
+    Surround {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+    /// Get or set surround balance (-10 to +10).
+    Balance {
+        #[arg(allow_negative_numbers = true)]
+        level: Option<i8>,
+    },
+}
+
+pub(crate) fn fmt_level(val: i8) -> String {
+    if val > 0 {
+        format!("+{val}")
+    } else {
+        format!("{val}")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -486,6 +774,78 @@ impl Soundbar {
                         .map(|m| m.as_str())
                         .unwrap_or("unknown");
                     print!("\r[surround mode changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_ELEVATION_MODE && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = ElevationMode::from_u8(v[0])
+                        .map(|m| m.as_str())
+                        .unwrap_or("unknown");
+                    print!("\r[elevation mode changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_SPEAKER_COLOR && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = SpeakerColor::from_u8(v[0])
+                        .map(|m| m.as_str())
+                        .unwrap_or("unknown");
+                    print!("\r[speaker color changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_POWER_LIGHT && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = if v[0] != 0 { "on" } else { "off" };
+                    print!("\r[power light changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_AUTO_HDMI && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = if v[0] != 0 { "on" } else { "off" };
+                    print!("\r[auto HDMI changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_AV_DELAY && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!("\r[AV delay changed to {}]\nvizio> ", v[0]);
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_LEVEL_BASS && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!("\r[bass changed to {}]\nvizio> ", fmt_level(v[0] as i8));
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_LEVEL_TREBLE && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!("\r[treble changed to {}]\nvizio> ", fmt_level(v[0] as i8));
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_LEVEL_CENTER && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!("\r[center changed to {}]\nvizio> ", fmt_level(v[0] as i8));
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_LEVEL_SUBWOOFER && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!(
+                        "\r[subwoofer changed to {}]\nvizio> ",
+                        fmt_level(v[0] as i8)
+                    );
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_LEVEL_SURROUND && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!(
+                        "\r[surround level changed to {}]\nvizio> ",
+                        fmt_level(v[0] as i8)
+                    );
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_LEVEL_BALANCE && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!(
+                        "\r[surround balance changed to {}]\nvizio> ",
+                        fmt_level(v[0] as i8)
+                    );
                     let _ = std::io::stdout().flush();
                 }
             } else if live_pr.load(Ordering::SeqCst)
@@ -657,6 +1017,17 @@ impl Soundbar {
         let _ = self.subscribe(H_MUTE);
         let _ = self.subscribe(H_EQ);
         let _ = self.subscribe(H_SURROUND);
+        let _ = self.subscribe(H_ELEVATION_MODE);
+        let _ = self.subscribe(H_SPEAKER_COLOR);
+        let _ = self.subscribe(H_POWER_LIGHT);
+        let _ = self.subscribe(H_AUTO_HDMI);
+        let _ = self.subscribe(H_AV_DELAY);
+        let _ = self.subscribe(H_LEVEL_BASS);
+        let _ = self.subscribe(H_LEVEL_TREBLE);
+        let _ = self.subscribe(H_LEVEL_CENTER);
+        let _ = self.subscribe(H_LEVEL_SUBWOOFER);
+        let _ = self.subscribe(H_LEVEL_SURROUND);
+        let _ = self.subscribe(H_LEVEL_BALANCE);
 
         let tag = self.read(H_DEVICE_TAG).unwrap_or_default();
         self.drain();
@@ -804,6 +1175,155 @@ impl Soundbar {
         self.surround()
     }
 
+    fn elevation(&mut self) -> Result<ElevationMode> {
+        let v = self.read(H_ELEVATION_MODE)?;
+        let byte = v
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("empty elevation mode value"))?;
+        ElevationMode::from_u8(byte).ok_or_else(|| anyhow!("unknown elevation mode byte: {byte}"))
+    }
+
+    fn set_elevation(&mut self, mode: ElevationMode) -> Result<ElevationMode> {
+        self.drain();
+        self.write_cmd(H_ELEVATION_MODE, &[mode as u8])?;
+        let _ = self.wait_notify(H_ELEVATION_MODE, Duration::from_millis(500));
+        self.elevation()
+    }
+
+    fn speaker_color(&mut self) -> Result<SpeakerColor> {
+        let v = self.read(H_SPEAKER_COLOR)?;
+        let byte = v
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("empty speaker color value"))?;
+        SpeakerColor::from_u8(byte).ok_or_else(|| anyhow!("unknown speaker color byte: {byte}"))
+    }
+
+    fn set_speaker_color(&mut self, color: SpeakerColor) -> Result<SpeakerColor> {
+        self.drain();
+        self.write_cmd(H_SPEAKER_COLOR, &[color as u8])?;
+        let _ = self.wait_notify(H_SPEAKER_COLOR, Duration::from_millis(500));
+        self.speaker_color()
+    }
+
+    fn power_light(&mut self) -> Result<bool> {
+        let v = self.read(H_POWER_LIGHT)?;
+        Ok(v.first().copied().unwrap_or(0) != 0)
+    }
+
+    fn set_power_light(&mut self, on: bool) -> Result<bool> {
+        self.drain();
+        self.write_cmd(H_POWER_LIGHT, &[if on { 1 } else { 0 }])?;
+        let _ = self.wait_notify(H_POWER_LIGHT, Duration::from_millis(500));
+        self.power_light()
+    }
+
+    fn toggle_power_light(&mut self) -> Result<bool> {
+        let cur = self.power_light()?;
+        self.set_power_light(!cur)
+    }
+
+    fn auto_hdmi(&mut self) -> Result<bool> {
+        let v = self.read(H_AUTO_HDMI)?;
+        Ok(v.first().copied().unwrap_or(0) != 0)
+    }
+
+    fn set_auto_hdmi(&mut self, on: bool) -> Result<bool> {
+        self.drain();
+        self.write_cmd(H_AUTO_HDMI, &[if on { 1 } else { 0 }])?;
+        let _ = self.wait_notify(H_AUTO_HDMI, Duration::from_millis(500));
+        self.auto_hdmi()
+    }
+
+    fn toggle_auto_hdmi(&mut self) -> Result<bool> {
+        let cur = self.auto_hdmi()?;
+        self.set_auto_hdmi(!cur)
+    }
+
+    fn av_delay(&mut self) -> Result<u8> {
+        let v = self.read(H_AV_DELAY)?;
+        v.first()
+            .copied()
+            .ok_or_else(|| anyhow!("empty AV delay value"))
+    }
+
+    fn set_av_delay(&mut self, delay: u8) -> Result<u8> {
+        if delay > 8 {
+            bail!("AV delay {delay} out of range (expected 0 to 8)");
+        }
+        self.drain();
+        self.write_cmd(H_AV_DELAY, &[delay])?;
+        let _ = self.wait_notify(H_AV_DELAY, Duration::from_millis(500));
+        self.av_delay()
+    }
+
+    fn read_level(&mut self, handle: u16) -> Result<i8> {
+        let v = self.read(handle)?;
+        v.first()
+            .copied()
+            .map(|b| b as i8)
+            .ok_or_else(|| anyhow!("empty level value"))
+    }
+
+    fn write_level(&mut self, handle: u16, level: i8) -> Result<i8> {
+        if !(-10..=10).contains(&level) {
+            bail!("level {level} out of range (expected -10 to +10)");
+        }
+        self.drain();
+        self.write_cmd(handle, &[level as u8])?;
+        let _ = self.wait_notify(handle, Duration::from_millis(500));
+        self.read_level(handle)
+    }
+
+    fn bass(&mut self) -> Result<i8> {
+        self.read_level(H_LEVEL_BASS)
+    }
+
+    fn set_bass(&mut self, level: i8) -> Result<i8> {
+        self.write_level(H_LEVEL_BASS, level)
+    }
+
+    fn treble(&mut self) -> Result<i8> {
+        self.read_level(H_LEVEL_TREBLE)
+    }
+
+    fn set_treble(&mut self, level: i8) -> Result<i8> {
+        self.write_level(H_LEVEL_TREBLE, level)
+    }
+
+    fn center(&mut self) -> Result<i8> {
+        self.read_level(H_LEVEL_CENTER)
+    }
+
+    fn set_center(&mut self, level: i8) -> Result<i8> {
+        self.write_level(H_LEVEL_CENTER, level)
+    }
+
+    fn subwoofer(&mut self) -> Result<i8> {
+        self.read_level(H_LEVEL_SUBWOOFER)
+    }
+
+    fn set_subwoofer(&mut self, level: i8) -> Result<i8> {
+        self.write_level(H_LEVEL_SUBWOOFER, level)
+    }
+
+    fn surround_level(&mut self) -> Result<i8> {
+        self.read_level(H_LEVEL_SURROUND)
+    }
+
+    fn set_surround_level(&mut self, level: i8) -> Result<i8> {
+        self.write_level(H_LEVEL_SURROUND, level)
+    }
+
+    fn surround_balance(&mut self) -> Result<i8> {
+        self.read_level(H_LEVEL_BALANCE)
+    }
+
+    fn set_surround_balance(&mut self, balance: i8) -> Result<i8> {
+        self.write_level(H_LEVEL_BALANCE, balance)
+    }
+
     fn snapshot_info(&mut self) -> Result<HashMap<u16, Vec<u8>>> {
         self.ensure_connected()?;
         let mut map = HashMap::new();
@@ -881,7 +1401,7 @@ impl Soundbar {
             };
             if let Ok(v) = self.read(c.handle) {
                 println!(
-                    "{label:<13}: {}",
+                    "{label:<17}: {}",
                     String::from_utf8_lossy(&v).trim_end_matches('\0')
                 );
             }
@@ -892,33 +1412,58 @@ impl Soundbar {
             }
             match self.read(h) {
                 Ok(v) => match fmt {
-                    Fmt::Str => println!("{label:<13}: {}", String::from_utf8_lossy(&v)),
-                    Fmt::U8 if v.len() == 1 => println!("{label:<13}: {}", v[0]),
-                    Fmt::U8 => println!("{label:<13}: {}", hex(&v)),
+                    Fmt::Str => println!("{label:<17}: {}", String::from_utf8_lossy(&v)),
+                    Fmt::U8 if v.len() == 1 => println!("{label:<17}: {}", v[0]),
+                    Fmt::U8 => println!("{label:<17}: {}", hex(&v)),
+                    Fmt::I8 if v.len() == 1 => println!("{label:<17}: {}", fmt_level(v[0] as i8)),
+                    Fmt::I8 => println!("{label:<17}: {}", hex(&v)),
                     Fmt::Bool => {
                         let b = v.first().copied().unwrap_or(0) != 0;
-                        println!("{label:<13}: {}", if b { "on (muted)" } else { "off" });
+                        let s = if h == H_MUTE {
+                            if b { "on (muted)" } else { "off" }
+                        } else {
+                            if b { "on" } else { "off" }
+                        };
+                        println!("{label:<17}: {s}");
                     }
                     Fmt::Eq => {
                         if let Some(&byte) = v.first() {
                             if let Some(mode) = EqMode::from_u8(byte) {
-                                println!("{label:<13}: {mode} ({byte})");
+                                println!("{label:<17}: {mode} ({byte})");
                             } else {
-                                println!("{label:<13}: unknown ({byte})");
+                                println!("{label:<17}: unknown ({byte})");
                             }
                         }
                     }
                     Fmt::Surround => {
                         if let Some(&byte) = v.first() {
                             if let Some(mode) = SurroundMode::from_u8(byte) {
-                                println!("{label:<13}: {mode} ({byte})");
+                                println!("{label:<17}: {mode} ({byte})");
                             } else {
-                                println!("{label:<13}: unknown ({byte})");
+                                println!("{label:<17}: unknown ({byte})");
+                            }
+                        }
+                    }
+                    Fmt::Elevation => {
+                        if let Some(&byte) = v.first() {
+                            if let Some(mode) = ElevationMode::from_u8(byte) {
+                                println!("{label:<17}: {mode} ({byte})");
+                            } else {
+                                println!("{label:<17}: unknown ({byte})");
+                            }
+                        }
+                    }
+                    Fmt::SpeakerColor => {
+                        if let Some(&byte) = v.first() {
+                            if let Some(color) = SpeakerColor::from_u8(byte) {
+                                println!("{label:<17}: {color} ({byte})");
+                            } else {
+                                println!("{label:<17}: unknown ({byte})");
                             }
                         }
                     }
                 },
-                Err(e) => println!("{label:<13}: <{e}>"),
+                Err(e) => println!("{label:<17}: <{e}>"),
             }
         }
         Ok(())
@@ -1067,6 +1612,170 @@ fn apply_surround(sb: &mut Soundbar, mode: Option<SurroundMode>) -> Result<()> {
     Ok(())
 }
 
+fn apply_elevation(sb: &mut Soundbar, mode: Option<ElevationMode>) -> Result<()> {
+    match mode {
+        Some(m) => {
+            let res = sb.set_elevation(m)?;
+            println!("Elevation Mode: {res} ({})", res as u8);
+        }
+        None => {
+            let res = sb.elevation()?;
+            println!("Elevation Mode: {res} ({})", res as u8);
+        }
+    }
+    Ok(())
+}
+
+fn apply_speaker_color(sb: &mut Soundbar, color: Option<SpeakerColor>) -> Result<()> {
+    match color {
+        Some(c) => {
+            let res = sb.set_speaker_color(c)?;
+            println!("Speaker Color: {res} ({})", res as u8);
+        }
+        None => {
+            let res = sb.speaker_color()?;
+            println!("Speaker Color: {res} ({})", res as u8);
+        }
+    }
+    Ok(())
+}
+
+fn apply_power_light(sb: &mut Soundbar, action: Option<&OnOffAction>) -> Result<()> {
+    match action {
+        Some(OnOffAction::Get) | None => {
+            let on = sb.power_light()?;
+            println!("Power Light: {}", if on { "on" } else { "off" });
+        }
+        Some(OnOffAction::On) => {
+            sb.set_power_light(true)?;
+            println!("Power Light: on");
+        }
+        Some(OnOffAction::Off) => {
+            sb.set_power_light(false)?;
+            println!("Power Light: off");
+        }
+        Some(OnOffAction::Toggle) => {
+            let on = sb.toggle_power_light()?;
+            println!("Power Light: {}", if on { "on" } else { "off" });
+        }
+    }
+    Ok(())
+}
+
+fn apply_auto_hdmi(sb: &mut Soundbar, action: Option<&OnOffAction>) -> Result<()> {
+    match action {
+        Some(OnOffAction::Get) | None => {
+            let on = sb.auto_hdmi()?;
+            println!("Auto HDMI: {}", if on { "on" } else { "off" });
+        }
+        Some(OnOffAction::On) => {
+            sb.set_auto_hdmi(true)?;
+            println!("Auto HDMI: on");
+        }
+        Some(OnOffAction::Off) => {
+            sb.set_auto_hdmi(false)?;
+            println!("Auto HDMI: off");
+        }
+        Some(OnOffAction::Toggle) => {
+            let on = sb.toggle_auto_hdmi()?;
+            println!("Auto HDMI: {}", if on { "on" } else { "off" });
+        }
+    }
+    Ok(())
+}
+
+fn apply_av_delay(sb: &mut Soundbar, delay: Option<u8>) -> Result<()> {
+    match delay {
+        Some(d) => {
+            let res = sb.set_av_delay(d)?;
+            println!("AV Delay: {res}");
+        }
+        None => {
+            let res = sb.av_delay()?;
+            println!("AV Delay: {res}");
+        }
+    }
+    Ok(())
+}
+
+fn apply_levels(sb: &mut Soundbar, target: Option<&LevelCmd>) -> Result<()> {
+    match target {
+        Some(LevelCmd::Bass { level }) => apply_bass(sb, *level),
+        Some(LevelCmd::Treble { level }) => apply_treble(sb, *level),
+        Some(LevelCmd::Center { level }) => apply_center(sb, *level),
+        Some(LevelCmd::Subwoofer { level }) => apply_subwoofer(sb, *level),
+        Some(LevelCmd::Surround { level }) => apply_surround_level(sb, *level),
+        Some(LevelCmd::Balance { level }) => apply_surround_balance(sb, *level),
+        None => {
+            let bass = sb.bass()?;
+            let treble = sb.treble()?;
+            let center = sb.center()?;
+            let subwoofer = sb.subwoofer()?;
+            let surround = sb.surround_level()?;
+            let balance = sb.surround_balance()?;
+            println!("Audio Levels (-10 to +10):");
+            println!("  Bass            : {}", fmt_level(bass));
+            println!("  Treble          : {}", fmt_level(treble));
+            println!("  Center          : {}", fmt_level(center));
+            println!("  Subwoofer       : {}", fmt_level(subwoofer));
+            println!("  Surround Level  : {}", fmt_level(surround));
+            println!("  Surround Balance: {}", fmt_level(balance));
+            Ok(())
+        }
+    }
+}
+
+fn apply_bass(sb: &mut Soundbar, level: Option<i8>) -> Result<()> {
+    match level {
+        Some(l) => println!("Bass: {}", fmt_level(sb.set_bass(l)?)),
+        None => println!("Bass: {}", fmt_level(sb.bass()?)),
+    }
+    Ok(())
+}
+
+fn apply_treble(sb: &mut Soundbar, level: Option<i8>) -> Result<()> {
+    match level {
+        Some(l) => println!("Treble: {}", fmt_level(sb.set_treble(l)?)),
+        None => println!("Treble: {}", fmt_level(sb.treble()?)),
+    }
+    Ok(())
+}
+
+fn apply_center(sb: &mut Soundbar, level: Option<i8>) -> Result<()> {
+    match level {
+        Some(l) => println!("Center: {}", fmt_level(sb.set_center(l)?)),
+        None => println!("Center: {}", fmt_level(sb.center()?)),
+    }
+    Ok(())
+}
+
+fn apply_subwoofer(sb: &mut Soundbar, level: Option<i8>) -> Result<()> {
+    match level {
+        Some(l) => println!("Subwoofer: {}", fmt_level(sb.set_subwoofer(l)?)),
+        None => println!("Subwoofer: {}", fmt_level(sb.subwoofer()?)),
+    }
+    Ok(())
+}
+
+fn apply_surround_level(sb: &mut Soundbar, level: Option<i8>) -> Result<()> {
+    match level {
+        Some(l) => println!("Surround Level: {}", fmt_level(sb.set_surround_level(l)?)),
+        None => println!("Surround Level: {}", fmt_level(sb.surround_level()?)),
+    }
+    Ok(())
+}
+
+fn apply_surround_balance(sb: &mut Soundbar, balance: Option<i8>) -> Result<()> {
+    match balance {
+        Some(b) => println!(
+            "Surround Balance: {}",
+            fmt_level(sb.set_surround_balance(b)?)
+        ),
+        None => println!("Surround Balance: {}", fmt_level(sb.surround_balance()?)),
+    }
+    Ok(())
+}
+
 fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     sb.ensure_connected()?;
     let handles: Vec<u16> = sb
@@ -1165,6 +1874,39 @@ fn diff_info(sb: &mut Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) -
                             .unwrap_or("unknown");
                         format!("{name} ({})", b[0])
                     }
+                    Some(b) if h == H_ELEVATION_MODE && b.len() == 1 => {
+                        let name = ElevationMode::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    }
+                    Some(b) if h == H_SPEAKER_COLOR && b.len() == 1 => {
+                        let name = SpeakerColor::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    }
+                    Some(b)
+                        if (h == H_POWER_LIGHT || h == H_AUTO_HDMI || h == H_MUTE)
+                            && b.len() == 1 =>
+                    {
+                        if b[0] != 0 {
+                            "on".to_string()
+                        } else {
+                            "off".to_string()
+                        }
+                    }
+                    Some(b)
+                        if (h == H_LEVEL_BASS
+                            || h == H_LEVEL_TREBLE
+                            || h == H_LEVEL_CENTER
+                            || h == H_LEVEL_SUBWOOFER
+                            || h == H_LEVEL_SURROUND
+                            || h == H_LEVEL_BALANCE)
+                            && b.len() == 1 =>
+                    {
+                        fmt_level(b[0] as i8)
+                    }
                     Some(b) if b.len() == 1 => format!("{} (0x{:02x})", b[0], b[0]),
                     Some(b) => hex(b),
                     None => "<none>".to_string(),
@@ -1219,6 +1961,33 @@ fn diff_all(sb: &mut Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) -> 
                             .map(|m| m.as_str())
                             .unwrap_or("unknown");
                         format!("{name} ({})", b[0])
+                    } else if h == H_ELEVATION_MODE && b.len() == 1 {
+                        let name = ElevationMode::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    } else if h == H_SPEAKER_COLOR && b.len() == 1 {
+                        let name = SpeakerColor::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    } else if (h == H_POWER_LIGHT || h == H_AUTO_HDMI || h == H_MUTE)
+                        && b.len() == 1
+                    {
+                        if b[0] != 0 {
+                            "on".to_string()
+                        } else {
+                            "off".to_string()
+                        }
+                    } else if (h == H_LEVEL_BASS
+                        || h == H_LEVEL_TREBLE
+                        || h == H_LEVEL_CENTER
+                        || h == H_LEVEL_SUBWOOFER
+                        || h == H_LEVEL_SURROUND
+                        || h == H_LEVEL_BALANCE)
+                        && b.len() == 1
+                    {
+                        fmt_level(b[0] as i8)
                     } else if b.len() == 1 {
                         format!("{} (0x{:02x})", b[0], b[0])
                     } else {
@@ -1254,6 +2023,18 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
         }
         DeviceCmd::Eq { mode } => apply_eq(sb, *mode),
         DeviceCmd::Surround { mode } => apply_surround(sb, *mode),
+        DeviceCmd::Position { mode } => apply_elevation(sb, *mode),
+        DeviceCmd::Color { color } => apply_speaker_color(sb, *color),
+        DeviceCmd::PowerLight { action } => apply_power_light(sb, action.as_ref()),
+        DeviceCmd::AutoHdmi { action } => apply_auto_hdmi(sb, action.as_ref()),
+        DeviceCmd::AvDelay { delay } => apply_av_delay(sb, *delay),
+        DeviceCmd::Levels { target } => apply_levels(sb, target.as_ref()),
+        DeviceCmd::Bass { level } => apply_bass(sb, *level),
+        DeviceCmd::Treble { level } => apply_treble(sb, *level),
+        DeviceCmd::Center { level } => apply_center(sb, *level),
+        DeviceCmd::Subwoofer { level } => apply_subwoofer(sb, *level),
+        DeviceCmd::SurroundLevel { level } => apply_surround_level(sb, *level),
+        DeviceCmd::SurroundBalance { balance } => apply_surround_balance(sb, *balance),
         DeviceCmd::Read { handle } => {
             let v = sb.read(parse_handle(handle)?)?;
             println!("{}  \"{}\"", hex(&v), printable(&v));
@@ -1284,7 +2065,9 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
-         eq [movie|music|game|direct], surr [off|on|dual|front], d / diff [all], snap, \
+         eq [movie|music|game|direct], surr [off|on|dual|front], elev [up|wide|auto], \
+         color [off|rainbow|...], levels, bass [n], treble [n], center [n], sub [n], \
+         power-light [on|off], hdmi [on|off], delay [0-8], d / diff [all], snap, \
          disc / disconnect, rec / reconnect, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );
     let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
