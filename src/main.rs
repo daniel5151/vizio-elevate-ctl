@@ -26,7 +26,7 @@ use clap::Subcommand;
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-const H_INPUT_GUESS: u16 = 0x0052;
+const H_STATE_52: u16 = 0x0052;
 const H_DEVICE_NAME: u16 = 0x0054;
 const H_DEVICE_TAG: u16 = 0x0056;
 const H_POWER_LIGHT: u16 = 0x0064;
@@ -34,7 +34,7 @@ const H_MUTE: u16 = 0x006a;
 const H_AV_DELAY: u16 = 0x006d;
 const H_EQ: u16 = 0x0076;
 const H_VOLUME: u16 = 0x0079;
-const H_MODE_7C: u16 = 0x007c;
+const H_INPUT: u16 = 0x007c;
 const H_SPEAKER_COLOR: u16 = 0x007f;
 const H_STATE_82: u16 = 0x0082;
 const H_AUTO_HDMI: u16 = 0x0085;
@@ -57,7 +57,7 @@ const H_AUTH_RESPONSE: u16 = 0x00c5;
 /// Handles used to auto-detect how Windows' `AttributeHandle` maps to ATT value
 /// handles.
 pub const KNOWN_HANDLES: &[u16] = &[
-    H_INPUT_GUESS,
+    H_STATE_52,
     H_DEVICE_NAME,
     H_DEVICE_TAG,
     H_POWER_LIGHT,
@@ -65,7 +65,7 @@ pub const KNOWN_HANDLES: &[u16] = &[
     H_AV_DELAY,
     H_EQ,
     H_VOLUME,
-    H_MODE_7C,
+    H_INPUT,
     H_SPEAKER_COLOR,
     H_STATE_82,
     H_AUTO_HDMI,
@@ -116,13 +116,14 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_LEVEL_SUBWOOFER, "Subwoofer", Fmt::I8),
     (H_LEVEL_SURROUND, "Surround Level", Fmt::I8),
     (H_LEVEL_BALANCE, "Surround Balance", Fmt::I8),
+    (H_INPUT, "Input Source", Fmt::Input),
     (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
-    (H_INPUT_GUESS, "0x0052 (unknown, maybe input)", Fmt::U8),
-    (H_MODE_7C, "0x007c (unknown)", Fmt::U8),
+    (H_STATE_52, "0x0052 (unknown)", Fmt::U8),
 ];
 
 /// Characteristics subscribed to for notifications upon authentication.
 const DEFAULT_SUBSCRIBE_HANDLES: &[u16] = &[
+    H_INPUT,
     H_VOLUME,
     H_MUTE,
     H_EQ,
@@ -150,6 +151,7 @@ enum Fmt {
     U8,
     I8,
     Bool,
+    Input,
     Eq,
     Surround,
     Elevation,
@@ -220,6 +222,12 @@ enum DeviceCmd {
     Mute {
         #[command(subcommand)]
         action: Option<MuteAction>,
+    },
+    /// Get or set the audio input mode (bluetooth, hdmi-earc).
+    #[command(alias = "in", alias = "source")]
+    Input {
+        /// Mode to set (bluetooth, hdmi-earc). Omit to print current input.
+        mode: Option<InputMode>,
     },
     /// Get or set the EQ mode.
     Eq {
@@ -511,6 +519,19 @@ macro_rules! vizio_enum {
 }
 
 vizio_enum! {
+    /// Audio input mode.
+    #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum InputMode {
+        /// Bluetooth audio input.
+        #[value(alias = "bt")]
+        Bluetooth = 1, "Bluetooth", ["bluetooth", "bt"],
+        /// HDMI-eARC audio input.
+        #[value(alias = "earc", alias = "hdmi")]
+        HdmiEarc = 2, "HDMI-eARC", ["hdmiearc", "hdmi", "earc"],
+    }
+}
+
+vizio_enum! {
     /// EQ mode preset.
     #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
     pub enum EqMode {
@@ -617,6 +638,7 @@ fn format_setting_value(fmt: Fmt, handle: u16, v: &[u8], detailed: bool) -> Stri
                 if b { "on" } else { "off" }.to_string()
             }
         }
+        Fmt::Input => format_enum_val::<InputMode>(v, detailed),
         Fmt::Eq => format_enum_val::<EqMode>(v, detailed),
         Fmt::Surround => format_enum_val::<SurroundMode>(v, detailed),
         Fmt::Elevation => format_enum_val::<ElevationMode>(v, detailed),
@@ -1558,6 +1580,7 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
         DeviceCmd::Mute { action } => {
             apply_mute(sb, action.as_ref().unwrap_or(&MuteAction::Toggle))
         }
+        DeviceCmd::Input { mode } => apply_enum(sb, "Input Source", H_INPUT, *mode),
         DeviceCmd::Eq { mode } => apply_enum(sb, "EQ Mode", H_EQ, *mode),
         DeviceCmd::Surround { mode } => apply_enum(sb, "Surround Mode", H_SURROUND, *mode),
         DeviceCmd::Position { mode } => apply_enum(sb, "Elevation Mode", H_ELEVATION_MODE, *mode),
@@ -1620,9 +1643,9 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
-         eq [movie|music|game|direct], surr [off|on|dual|front], elev [up|wide|auto], \
-         color [off|rainbow|...], levels, bass [n], treble [n], center [n], sub [n], \
-         dialog [0-10], vx [on|off], truvol [on|off], night [on|off], \
+         in / input [bluetooth|hdmi-earc], eq [movie|music|game|direct], surr [off|on|dual|front], \
+         elev [up|wide|auto], color [off|rainbow|...], levels, bass [n], treble [n], \
+         center [n], sub [n], dialog [0-10], vx [on|off], truvol [on|off], night [on|off], \
          power-light [on|off], hdmi [on|off], delay [0-8], d / diff [all], snap, \
          disc / disconnect, rec / reconnect, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );
