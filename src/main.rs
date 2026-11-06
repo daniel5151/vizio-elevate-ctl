@@ -1094,6 +1094,14 @@ fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     }
 }
 
+fn parse_shell_line(line: &str) -> Vec<&str> {
+    let line = match line.split_once('#') {
+        Some((before, _)) => before,
+        None => line,
+    };
+    line.split_whitespace().collect()
+}
+
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, info, read <h>, \
@@ -1113,7 +1121,7 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
         if n_read? == 0 {
             break;
         }
-        let parts: Vec<&str> = line.split_whitespace().collect();
+        let parts = parse_shell_line(&line);
         let n = |i: usize, d: u8| parts.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
         let res = match parts.as_slice() {
             [] => Ok(()),
