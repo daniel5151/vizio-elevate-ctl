@@ -153,6 +153,14 @@ enum Cmd {
     Pair,
     /// Remove the OS-level pairing.
     Unpair,
+    /// Interactive shell that keeps the connection open (fast volume changes).
+    Shell,
+    #[command(flatten)]
+    Op(DeviceCmd),
+}
+
+#[derive(Subcommand, Clone)]
+enum DeviceCmd {
     /// Connect, authenticate and print device info / state.
     Info,
     /// List every GATT service/characteristic with handles (and values if
@@ -172,7 +180,8 @@ enum Cmd {
     },
     /// Get or set the EQ mode.
     Eq {
-        /// Mode to set (movie, music, game, direct). Omit to print current mode.
+        /// Mode to set (movie, music, game, direct). Omit to print current
+        /// mode.
         mode: Option<EqMode>,
     },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
@@ -181,7 +190,8 @@ enum Cmd {
     /// added unless --no-token.
     Write {
         handle: String,
-        hex: String,
+        #[arg(required = true, num_args = 1..)]
+        hex: Vec<String>,
         #[arg(long)]
         no_token: bool,
         #[arg(long)]
@@ -189,8 +199,52 @@ enum Cmd {
     },
     /// Authenticate and print all notifications until Ctrl+C.
     Monitor,
-    /// Interactive shell that keeps the connection open (fast volume changes).
-    Shell,
+}
+
+#[derive(Parser)]
+#[command(name = "vizio", no_binary_name = true)]
+enum ShellCmd {
+    #[command(flatten)]
+    Device(DeviceCmd),
+
+    /// Raise volume by N steps.
+    #[command(alias = "+")]
+    Up {
+        /// Number of steps to raise.
+        #[arg(default_value_t = 1)]
+        steps: u8,
+    },
+    /// Lower volume by N steps.
+    Down {
+        /// Number of steps to lower.
+        #[arg(default_value_t = 1)]
+        steps: u8,
+    },
+    /// Set volume to an absolute level.
+    Set {
+        /// Volume level (0-100).
+        level: u8,
+    },
+    /// Print current volume.
+    Get,
+
+    /// Save current state as baseline for diffing.
+    #[command(alias = "snapshot")]
+    Snap,
+    /// Compare current state against baseline snapshot.
+    #[command(alias = "d")]
+    Diff {
+        /// Diff all handles instead of just info fields.
+        #[arg(long, short)]
+        all: bool,
+        /// Optional target (e.g. "all").
+        target: Option<String>,
+    },
+    /// Subscribe to all notifications and print them live at prompt.
+    Watch,
+    /// Exit the interactive shell.
+    #[command(alias = "q", alias = "exit")]
+    Quit,
 }
 
 #[derive(Subcommand, Clone)]
@@ -214,6 +268,7 @@ enum VolAction {
 #[derive(Subcommand, Clone)]
 enum MuteAction {
     /// Print current mute state.
+    #[command(alias = "status")]
     Get,
     /// Mute audio.
     #[command(alias = "1")]
@@ -1319,18 +1374,185 @@ fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     }
 }
 
-fn parse_shell_line(line: &str) -> Vec<&str> {
+fn preprocess_shell_line(line: &str) -> Option<String> {
     let line = match line.split_once('#') {
         Some((before, _)) => before,
         None => line,
-    };
-    line.split_whitespace().collect()
+    }
+    .trim();
+
+    if line.is_empty() {
+        return None;
+    }
+
+    // Handle bare integer volume levels (e.g. "45" -> "set 45").
+    if line.parse::<u8>().is_ok() {
+        return Some(format!("set {line}"));
+    }
+
+    // Handle "-" shortcuts (e.g. "-" -> "down", "- 3" -> "down 3", "-3" ->
+    // "down 3"). Avoid intercepting flags like "-h" or "--help".
+    if let Some(rest) = line.strip_prefix('-') {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some("down".to_string());
+        }
+        if !rest.starts_with('-')
+            && rest != "h"
+            && (rest.chars().all(|c| c.is_ascii_digit())
+                || rest.starts_with(|c: char| c.is_ascii_digit() || c.is_whitespace()))
+        {
+            return Some(format!("down {rest}"));
+        }
+    }
+
+    // Handle "+" shortcuts (e.g. "+" -> "up", "+ 3" -> "up 3", "+3" -> "up 3").
+    if let Some(rest) = line.strip_prefix('+') {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some("up".to_string());
+        }
+        return Some(format!("up {rest}"));
+    }
+
+    Some(line.to_string())
+}
+
+fn diff_info(sb: &Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) {
+    let cur = sb.snapshot_info();
+    if let Some(prev) = snap_info.take() {
+        let mut diffs = Vec::new();
+        for &(h, label, _) in INFO_FIELDS {
+            let old = prev.get(&h);
+            let new = cur.get(&h);
+            if old != new {
+                diffs.push((h, label, old, new));
+            }
+        }
+        if diffs.is_empty() {
+            println!("No changes detected across {} fields.", cur.len());
+        } else {
+            println!("Changes detected:");
+            for (h, label, old, new) in diffs {
+                let fmt_val = |v: Option<&Vec<u8>>| match v {
+                    Some(b) if h == H_EQ && b.len() == 1 => {
+                        let name = EqMode::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    }
+                    Some(b) if b.len() == 1 => format!("{} (0x{:02x})", b[0], b[0]),
+                    Some(b) => hex(b),
+                    None => "<none>".to_string(),
+                };
+                println!(
+                    "  0x{h:04x} ({label}): {} -> {}",
+                    fmt_val(old),
+                    fmt_val(new)
+                );
+            }
+        }
+    } else {
+        println!(
+            "Baseline snapshot saved ({} fields). Press a button on the remote, then type 'diff'.",
+            cur.len()
+        );
+    }
+    *snap_info = Some(cur);
+}
+
+fn diff_all(sb: &Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) {
+    let cur = sb.snapshot_all();
+    if let Some(prev) = snap_all.take() {
+        let mut diffs = Vec::new();
+        for (&h, new) in &cur {
+            if let Some(old) = prev.get(&h) {
+                if old != new {
+                    diffs.push((h, old, new));
+                }
+            }
+        }
+        diffs.sort_by_key(|&(h, _, _)| h);
+        if diffs.is_empty() {
+            println!("No changes detected across {} handles.", cur.len());
+        } else {
+            println!("Changes detected across all handles:");
+            for (h, old, new) in diffs {
+                let label = INFO_FIELDS
+                    .iter()
+                    .find(|(ih, _, _)| *ih == h)
+                    .map(|(_, l, _)| *l)
+                    .unwrap_or("unknown");
+                let fmt_val = |b: &[u8]| {
+                    if h == H_EQ && b.len() == 1 {
+                        let name = EqMode::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    } else if b.len() == 1 {
+                        format!("{} (0x{:02x})", b[0], b[0])
+                    } else {
+                        format!("{} \"{}\"", hex(b), printable(b))
+                    }
+                };
+                println!(
+                    "  0x{h:04x} ({label}): {} -> {}",
+                    fmt_val(old),
+                    fmt_val(new)
+                );
+            }
+        }
+    } else {
+        println!(
+            "Baseline snapshot of ALL handles saved ({} handles). Press a button on the remote, then type 'diff all'.",
+            cur.len()
+        );
+    }
+    *snap_all = Some(cur);
+}
+
+fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
+    match cmd {
+        DeviceCmd::Info => sb.print_info(),
+        DeviceCmd::Dump => sb.dump(),
+        DeviceCmd::Volume { action } => {
+            apply_volume(sb, action.as_ref().unwrap_or(&VolAction::Get))
+        }
+        DeviceCmd::Mute { action } => {
+            apply_mute(sb, action.as_ref().unwrap_or(&MuteAction::Toggle))
+        }
+        DeviceCmd::Eq { mode } => apply_eq(sb, *mode),
+        DeviceCmd::Read { handle } => {
+            let v = sb.read(parse_handle(handle)?)?;
+            println!("{}  \"{}\"", hex(&v), printable(&v));
+            Ok(())
+        }
+        DeviceCmd::Write {
+            handle,
+            hex: h,
+            no_token,
+            with_response,
+        } => {
+            let handle = parse_handle(handle)?;
+            let data = parse_hex(&h.join(""))?;
+            if *no_token {
+                sb.write_raw(handle, &data, Some(*with_response))?;
+            } else {
+                sb.write_cmd(handle, &data)?;
+            }
+            if let Some(v) = sb.wait_notify(handle, Duration::from_millis(1000)) {
+                println!("notify 0x{handle:04x} -> {}", hex(&v));
+            }
+            Ok(())
+        }
+        DeviceCmd::Monitor => cmd_monitor(sb),
+    }
 }
 
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
-         eq [movie|music|game|direct], d / diff [all], snap, watch, info, read <h>, write <h> <hex>, q"
+         eq [movie|music|game|direct], d / diff [all], snap, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );
     let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
     let mut snap_all: Option<HashMap<u16, Vec<u8>>> = None;
@@ -1348,152 +1570,51 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
         if n_read? == 0 {
             break;
         }
-        let parts = parse_shell_line(&line);
-        let n = |i: usize, d: u8| parts.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
-        let res = match parts.as_slice() {
-            [] => Ok(()),
-            ["q" | "quit" | "exit"] => break,
-            ["+" | "up", ..] => apply_volume(sb, &VolAction::Up { steps: n(1, 1) }),
-            ["-" | "down", ..] => apply_volume(sb, &VolAction::Down { steps: n(1, 1) }),
-            ["get" | "v" | "vol"] => apply_volume(sb, &VolAction::Get),
-            ["set", x] => x
-                .parse()
-                .map_err(Into::into)
-                .and_then(|level| apply_volume(sb, &VolAction::Set { level })),
-            [x] if x.parse::<u8>().is_ok() => apply_volume(
-                sb,
-                &VolAction::Set {
-                    level: x.parse().unwrap(),
-                },
-            ),
-            ["m" | "mute"] => apply_mute(sb, &MuteAction::Toggle),
-            ["mute", "on" | "1"] => apply_mute(sb, &MuteAction::On),
-            ["mute", "off" | "0"] => apply_mute(sb, &MuteAction::Off),
-            ["mute", "get" | "status"] => apply_mute(sb, &MuteAction::Get),
-            ["mute", "toggle" | "t"] => apply_mute(sb, &MuteAction::Toggle),
-            ["eq"] => apply_eq(sb, None),
-            ["eq", mode_str] => match mode_str.parse::<EqMode>() {
-                Ok(m) => apply_eq(sb, Some(m)),
-                Err(e) => {
-                    println!("error: {e}");
-                    Ok(())
-                }
-            },
-            ["watch"] => {
+
+        let Some(normalized) = preprocess_shell_line(&line) else {
+            continue;
+        };
+
+        let args = normalized.split_whitespace();
+        let cmd = match ShellCmd::try_parse_from(args) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                let _ = e.print();
+                continue;
+            }
+        };
+
+        let res = match cmd {
+            ShellCmd::Quit => break,
+            ShellCmd::Device(op) => execute_device_cmd(sb, &op),
+            ShellCmd::Up { steps } => apply_volume(sb, &VolAction::Up { steps }),
+            ShellCmd::Down { steps } => apply_volume(sb, &VolAction::Down { steps }),
+            ShellCmd::Set { level } => apply_volume(sb, &VolAction::Set { level }),
+            ShellCmd::Get => apply_volume(sb, &VolAction::Get),
+            ShellCmd::Watch => {
                 let count = sb.subscribe_all_notify();
                 println!(
                     "Subscribed to {count} characteristics. Notifications will print live at prompt."
                 );
                 Ok(())
             }
-            ["snap" | "snapshot"] => {
+            ShellCmd::Snap => {
                 snap_info = Some(sb.snapshot_info());
                 snap_all = Some(sb.snapshot_all());
                 println!("Snapshots updated as new baseline.");
                 Ok(())
             }
-            ["d" | "diff"] => {
-                let cur = sb.snapshot_info();
-                if let Some(prev) = snap_info.take() {
-                    let mut diffs = Vec::new();
-                    for &(h, label, _) in INFO_FIELDS {
-                        let old = prev.get(&h);
-                        let new = cur.get(&h);
-                        if old != new {
-                            diffs.push((h, label, old, new));
-                        }
-                    }
-                    if diffs.is_empty() {
-                        println!("No changes detected across {} fields.", cur.len());
-                    } else {
-                        println!("Changes detected:");
-                        for (h, label, old, new) in diffs {
-                            let fmt_val = |v: Option<&Vec<u8>>| match v {
-                                Some(b) if h == H_EQ && b.len() == 1 => {
-                                    let name = EqMode::from_u8(b[0])
-                                        .map(|m| m.as_str())
-                                        .unwrap_or("unknown");
-                                    format!("{name} ({})", b[0])
-                                }
-                                Some(b) if b.len() == 1 => format!("{} (0x{:02x})", b[0], b[0]),
-                                Some(b) => hex(b),
-                                None => "<none>".to_string(),
-                            };
-                            println!(
-                                "  0x{h:04x} ({label}): {} -> {}",
-                                fmt_val(old),
-                                fmt_val(new)
-                            );
-                        }
-                    }
+            ShellCmd::Diff { all, target } => {
+                let is_all = all || target.as_deref() == Some("all");
+                if is_all {
+                    diff_all(sb, &mut snap_all);
                 } else {
-                    println!(
-                        "Baseline snapshot saved ({} fields). Press a button on the remote, then type 'diff'.",
-                        cur.len()
-                    );
+                    diff_info(sb, &mut snap_info);
                 }
-                snap_info = Some(cur);
                 Ok(())
             }
-            ["d" | "diff", "all"] => {
-                let cur = sb.snapshot_all();
-                if let Some(prev) = snap_all.take() {
-                    let mut diffs = Vec::new();
-                    for (&h, new) in &cur {
-                        if let Some(old) = prev.get(&h) {
-                            if old != new {
-                                diffs.push((h, old, new));
-                            }
-                        }
-                    }
-                    diffs.sort_by_key(|&(h, _, _)| h);
-                    if diffs.is_empty() {
-                        println!("No changes detected across {} handles.", cur.len());
-                    } else {
-                        println!("Changes detected across all handles:");
-                        for (h, old, new) in diffs {
-                            let label = INFO_FIELDS
-                                .iter()
-                                .find(|(ih, _, _)| *ih == h)
-                                .map(|(_, l, _)| *l)
-                                .unwrap_or("unknown");
-                            let fmt_val = |b: &[u8]| {
-                                if h == H_EQ && b.len() == 1 {
-                                    let name = EqMode::from_u8(b[0])
-                                        .map(|m| m.as_str())
-                                        .unwrap_or("unknown");
-                                    format!("{name} ({})", b[0])
-                                } else if b.len() == 1 {
-                                    format!("{} (0x{:02x})", b[0], b[0])
-                                } else {
-                                    format!("{} \"{}\"", hex(b), printable(b))
-                                }
-                            };
-                            println!(
-                                "  0x{h:04x} ({label}): {} -> {}",
-                                fmt_val(old),
-                                fmt_val(new)
-                            );
-                        }
-                    }
-                } else {
-                    println!(
-                        "Baseline snapshot of ALL handles saved ({} handles). Press a button on the remote, then type 'diff all'.",
-                        cur.len()
-                    );
-                }
-                snap_all = Some(cur);
-                Ok(())
-            }
-            ["info"] => sb.print_info(),
-            ["read", h] => parse_handle(h).and_then(|h| sb.read(h)).map(|v| {
-                println!("{}  \"{}\"", hex(&v), printable(&v));
-            }),
-            ["write", h, rest @ ..] => parse_handle(h)
-                .and_then(|h| Ok((h, parse_hex(&rest.join(""))?)))
-                .and_then(|(h, d)| sb.write_cmd(h, &d)),
-            _ => Err(anyhow!("unknown command")),
         };
+
         if let Err(e) = res {
             println!("error: {e:#}");
         }
@@ -1511,44 +1632,16 @@ fn run(cli: Cli) -> Result<()> {
 
     let mut sb = Soundbar::connect(&cli)?;
     let result = (|| -> Result<()> {
-        if matches!(cli.cmd, Cmd::Dump) {
+        if matches!(cli.cmd, Cmd::Op(DeviceCmd::Dump)) {
             // Dump before auth so it works even if the handshake fails.
-            sb.dump()?;
-            return Ok(());
+            return sb.dump();
         }
         sb.authenticate()
             .context("authentication handshake failed")?;
         match &cli.cmd {
-            Cmd::Info => sb.print_info(),
-            Cmd::Volume { action } => apply_volume(&sb, action.as_ref().unwrap_or(&VolAction::Get)),
-            Cmd::Mute { action } => apply_mute(&sb, action.as_ref().unwrap_or(&MuteAction::Toggle)),
-            Cmd::Eq { mode } => apply_eq(&sb, *mode),
-            Cmd::Read { handle } => {
-                let v = sb.read(parse_handle(handle)?)?;
-                println!("{}  \"{}\"", hex(&v), printable(&v));
-                Ok(())
-            }
-            Cmd::Write {
-                handle,
-                hex: h,
-                no_token,
-                with_response,
-            } => {
-                let handle = parse_handle(handle)?;
-                let data = parse_hex(h)?;
-                if *no_token {
-                    sb.write_raw(handle, &data, Some(*with_response))?;
-                } else {
-                    sb.write_cmd(handle, &data)?;
-                }
-                if let Some(v) = sb.wait_notify(handle, Duration::from_millis(1000)) {
-                    println!("notify 0x{handle:04x} -> {}", hex(&v));
-                }
-                Ok(())
-            }
-            Cmd::Monitor => cmd_monitor(&mut sb),
             Cmd::Shell => cmd_shell(&mut sb),
-            Cmd::Scan | Cmd::Pair | Cmd::Unpair | Cmd::Dump => unreachable!(),
+            Cmd::Op(op) => execute_device_cmd(&mut sb, op),
+            Cmd::Scan | Cmd::Pair | Cmd::Unpair => unreachable!(),
         }
     })();
     sb.close();
