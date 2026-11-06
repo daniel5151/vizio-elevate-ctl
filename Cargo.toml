@@ -8,7 +8,10 @@ description = "Control a VIZIO Elevate soundbar over Bluetooth LE from Windows"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 toml = "1.2.1"
-windows = { version = "0.62", features = [
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
     "Foundation",
     "Foundation_Collections",
     "Devices_Bluetooth",
@@ -16,7 +19,7 @@ windows = { version = "0.62", features = [
     "Devices_Bluetooth_GenericAttributeProfile",
     "Devices_Enumeration",
     "Storage_Streams",
-] }
+]
 
 # Lint list yoinked from https://github.com/microsoft/openvmm/blob/main/Cargo.toml
 

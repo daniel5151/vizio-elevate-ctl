@@ -1,16 +1,16 @@
 //! vizio-ctl: control a VIZIO Elevate soundbar over Bluetooth LE
 
+mod bt;
+
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::Write as _;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::mpsc::Sender;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 use std::time::Instant;
@@ -21,33 +21,6 @@ use anyhow::anyhow;
 use anyhow::bail;
 use clap::Parser;
 use clap::Subcommand;
-use windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs;
-use windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher;
-use windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
-use windows::Devices::Bluetooth::BluetoothCacheMode;
-use windows::Devices::Bluetooth::BluetoothConnectionStatus;
-use windows::Devices::Bluetooth::BluetoothDevice;
-use windows::Devices::Bluetooth::BluetoothLEDevice;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristicProperties;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattClientCharacteristicConfigurationDescriptorValue;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattCommunicationStatus;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattSession;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattSharingMode;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattValueChangedEventArgs;
-use windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption;
-use windows::Devices::Enumeration::DeviceInformation;
-use windows::Devices::Enumeration::DeviceInformationCustomPairing;
-use windows::Devices::Enumeration::DevicePairingKinds;
-use windows::Devices::Enumeration::DevicePairingRequestedEventArgs;
-use windows::Devices::Enumeration::DevicePairingResultStatus;
-use windows::Foundation::TypedEventHandler;
-use windows::Storage::Streams::DataReader;
-use windows::Storage::Streams::DataWriter;
-use windows::Storage::Streams::IBuffer;
-use windows::core::GUID;
-use windows::core::HSTRING;
 
 // ---------------------------------------------------------------------------
 // Protocol constants
@@ -67,7 +40,7 @@ const H_AUTH_RESPONSE: u16 = 0x00c5;
 
 /// Handles used to auto-detect how Windows' `AttributeHandle` maps to ATT value
 /// handles.
-const KNOWN_HANDLES: &[u16] = &[
+pub const KNOWN_HANDLES: &[u16] = &[
     H_INPUT_GUESS,
     H_DEVICE_NAME,
     H_DEVICE_TAG,
@@ -119,27 +92,27 @@ enum Fmt {
 
 #[derive(Parser)]
 #[command(version, about = "Control a VIZIO Elevate soundbar over Bluetooth LE")]
-struct Cli {
+pub(crate) struct Cli {
     /// BLE address of the soundbar (AA:BB:CC:DD:EE:FF). Remembered after first
     /// success.
     #[arg(short, long, global = true)]
-    address: Option<String>,
+    pub(crate) address: Option<String>,
 
     /// Substring of the advertised/paired device name to look for.
     #[arg(short, long, global = true, default_value = "VIZIO")]
-    name: String,
+    pub(crate) name: String,
 
     /// How long to scan for the soundbar when it isn't already known.
     #[arg(long, global = true, default_value_t = 10)]
-    scan_secs: u64,
+    pub(crate) scan_secs: u64,
 
     /// Print every GATT operation.
     #[arg(short, long, global = true)]
-    verbose: bool,
+    pub(crate) verbose: bool,
 
     /// Never raise the volume above this level.
     #[arg(long, global = true, default_value_t = MAX_VOLUME)]
-    max_volume: u8,
+    pub(crate) max_volume: u8,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -338,22 +311,6 @@ impl std::str::FromStr for EqMode {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn parse_addr(s: &str) -> Result<u64> {
-    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if hex.len() != 12 {
-        bail!("invalid Bluetooth address {s:?}");
-    }
-    Ok(u64::from_str_radix(&hex, 16)?)
-}
-
-fn fmt_addr(a: u64) -> String {
-    (0..6)
-        .rev()
-        .map(|i| format!("{:02X}", (a >> (i * 8)) & 0xff))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
 fn parse_handle(s: &str) -> Result<u16> {
     let s = s.trim();
     Ok(
@@ -380,14 +337,14 @@ fn parse_hex(s: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter()
         .map(|x| format!("{x:02x}"))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn printable(b: &[u8]) -> String {
+pub(crate) fn printable(b: &[u8]) -> String {
     b.iter()
         .map(|&c| {
             if (0x20..0x7f).contains(&c) {
@@ -399,421 +356,80 @@ fn printable(b: &[u8]) -> String {
         .collect()
 }
 
-fn buf_to_vec(buf: &IBuffer) -> Result<Vec<u8>> {
-    let len = buf.Length()? as usize;
-    let mut v = vec![0u8; len];
-    if len > 0 {
-        DataReader::FromBuffer(buf)?.ReadBytes(&mut v)?;
-    }
-    Ok(v)
-}
-
-fn vec_to_buf(data: &[u8]) -> Result<IBuffer> {
-    let w = DataWriter::new()?;
-    w.WriteBytes(data)?;
-    Ok(w.DetachBuffer()?)
-}
-
-fn short_uuid(g: &GUID) -> Option<u16> {
-    let base = [0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb];
-    (g.data1 <= 0xffff && g.data2 == 0 && g.data3 == 0x1000 && g.data4 == base)
-        .then_some(g.data1 as u16)
-}
-
-fn uuid_str(g: &GUID) -> String {
-    match short_uuid(g) {
-        Some(s) => format!("0x{s:04X}"),
-        None => format!("{g:?}"),
-    }
-}
-
-fn props_str(p: u32) -> String {
-    let names = [
-        (GattCharacteristicProperties::Broadcast.0, "bcast"),
-        (GattCharacteristicProperties::Read.0, "read"),
-        (
-            GattCharacteristicProperties::WriteWithoutResponse.0,
-            "write-nr",
-        ),
-        (GattCharacteristicProperties::Write.0, "write"),
-        (GattCharacteristicProperties::Notify.0, "notify"),
-        (GattCharacteristicProperties::Indicate.0, "indicate"),
-    ];
-    names
-        .iter()
-        .filter(|(f, _)| p & f != 0)
-        .map(|(_, n)| *n)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn config_file() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("vizio-ctl.toml")))
-}
-
-fn load_cached_addr() -> Option<u64> {
-    let s = std::fs::read_to_string(config_file()?).ok()?;
-    let table: toml::Table = s.parse().ok()?;
-    let addr_str = table.get("address")?.as_str()?;
-    parse_addr(addr_str.trim()).ok()
-}
-
-fn save_cached_addr(a: u64) {
-    if let Some(f) = config_file() {
-        let mut table: toml::Table = std::fs::read_to_string(&f)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
-        table.insert("address".to_string(), toml::Value::String(fmt_addr(a)));
-        if let Some(p) = f.parent() {
-            let _ = std::fs::create_dir_all(p);
-        }
-        let _ = std::fs::write(f, table.to_string());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Discovery
-// ---------------------------------------------------------------------------
-
-/// Scan BLE advertisements. Returns address -> (name, rssi).
-fn scan(secs: u64, stop_on: Option<&str>) -> Result<HashMap<u64, (String, i16)>> {
-    let seen: Arc<Mutex<HashMap<u64, (String, i16)>>> = Arc::default();
-    let watcher = BluetoothLEAdvertisementWatcher::new()?;
-    watcher.SetScanningMode(BluetoothLEScanningMode::Active)?;
-    let s2 = seen.clone();
-    watcher.Received(&TypedEventHandler::<
-        BluetoothLEAdvertisementWatcher,
-        BluetoothLEAdvertisementReceivedEventArgs,
-    >::new(move |_, args| {
-        if let Some(a) = args.as_ref() {
-            let addr = a.BluetoothAddress()?;
-            let rssi = a.RawSignalStrengthInDBm()?;
-            let name = a.Advertisement()?.LocalName()?.to_string();
-            let mut m = s2.lock().unwrap();
-            let e = m.entry(addr).or_insert((String::new(), rssi));
-            e.1 = rssi;
-            if !name.is_empty() {
-                e.0 = name;
-            }
-        }
-        Ok(())
-    }))?;
-    watcher.Start()?;
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    let needle = stop_on.map(|s| s.to_lowercase());
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(200));
-        if let Some(n) = &needle {
-            if seen
-                .lock()
-                .unwrap()
-                .values()
-                .any(|(name, _)| name.to_lowercase().contains(n))
-            {
-                break;
-            }
-        }
-    }
-    watcher.Stop()?;
-    let m = seen.lock().unwrap().clone();
-    Ok(m)
-}
-
-/// Paired devices (LE and classic) as (name, address).
-fn paired_devices() -> Result<Vec<(String, u64, &'static str)>> {
-    let mut out = Vec::new();
-    let le = DeviceInformation::FindAllAsyncAqsFilter(
-        &BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)?,
-    )?
-    .join()?;
-    for di in &le {
-        if let Ok(d) = BluetoothLEDevice::FromIdAsync(&di.Id()?)?.join() {
-            out.push((di.Name()?.to_string(), d.BluetoothAddress()?, "LE"));
-            let _ = d.Close();
-        }
-    }
-    let classic = DeviceInformation::FindAllAsyncAqsFilter(
-        &BluetoothDevice::GetDeviceSelectorFromPairingState(true)?,
-    )?
-    .join()?;
-    for di in &classic {
-        if let Ok(d) = BluetoothDevice::FromIdAsync(&di.Id()?)?.join() {
-            out.push((di.Name()?.to_string(), d.BluetoothAddress()?, "classic"));
-            let _ = d.Close();
-        }
-    }
-    Ok(out)
-}
-
-fn le_from_addr(a: u64) -> Result<BluetoothLEDevice> {
-    BluetoothLEDevice::FromBluetoothAddressAsync(a)?
-        .join()
-        .map_err(|e| anyhow!("no BLE device at {}: {e}", fmt_addr(a)))
-}
-
-fn find_device(cli: &Cli) -> Result<BluetoothLEDevice> {
-    if let Some(a) = &cli.address {
-        return le_from_addr(parse_addr(a)?);
-    }
-    if let Some(a) = load_cached_addr() {
-        if let Ok(d) = le_from_addr(a) {
-            eprintln!("Using remembered device {}", fmt_addr(a));
-            return Ok(d);
-        }
-    }
-    let needle = cli.name.to_lowercase();
-    if let Ok(paired) = paired_devices() {
-        for (name, addr, kind) in paired {
-            if name.to_lowercase().contains(&needle) {
-                if let Ok(d) = le_from_addr(addr) {
-                    eprintln!("Using paired ({kind}) device {name:?} {}", fmt_addr(addr));
-                    return Ok(d);
-                }
-            }
-        }
-    }
-    eprintln!(
-        "Scanning up to {}s for a BLE device named *{}*...",
-        cli.scan_secs, cli.name
-    );
-    let seen = scan(cli.scan_secs, Some(&cli.name))?;
-    let best = seen
-        .iter()
-        .filter(|(_, (n, _))| n.to_lowercase().contains(&needle))
-        .max_by_key(|(_, (_, rssi))| *rssi);
-    match best {
-        Some((addr, (name, rssi))) => {
-            eprintln!("Found {name:?} {} ({rssi} dBm)", fmt_addr(*addr));
-            le_from_addr(*addr)
-        }
-        None => bail!(
-            "soundbar not found. Make sure it's on, close the VIZIO app / turn off Bluetooth on \
-             your phone (BLE peripherals often accept only one connection), or pass --address"
-        ),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Soundbar connection
 // ---------------------------------------------------------------------------
 
-struct CharInfo {
-    ch: GattCharacteristic,
-    attr_handle: u16,
-    uuid: GUID,
-    service_uuid: GUID,
-    props: u32,
-}
-
 struct Soundbar {
-    device: BluetoothLEDevice,
-    session: Option<GattSession>,
-    services: Vec<GattDeviceService>,
-    chars: Vec<CharInfo>,
-    /// value_handle = attr_handle + offset
-    offset: i32,
-    tx: Sender<(u16, Vec<u8>)>,
+    conn: bt::BleConnection,
     rx: Receiver<(u16, Vec<u8>)>,
     subscribed: Vec<u16>,
     token: Option<Vec<u8>>,
     verbose: bool,
     max_volume: u8,
-    /// Last volume level seen (via read or notification), used to de-duplicate.
     last_volume: Arc<Mutex<Option<u8>>>,
-    /// When set (shell idle at the prompt), volume changes are printed
-    /// immediately.
     live_print: Arc<AtomicBool>,
 }
 
 impl Soundbar {
     fn connect(cli: &Cli) -> Result<Self> {
-        let device = find_device(cli)?;
-        let addr = device.BluetoothAddress()?;
-        eprintln!("Connecting to {} ({})...", device.Name()?, fmt_addr(addr));
-
-        let session = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?)
-            .and_then(|op| op.join())
-            .ok();
-        if let Some(s) = &session {
-            let _ = s.SetMaintainConnection(true);
-        }
-
-        let mut services = Vec::new();
-        let mut last_err = String::new();
-        for attempt in 1..=3 {
-            let r = device
-                .GetGattServicesWithCacheModeAsync(BluetoothCacheMode::Uncached)?
-                .join()?;
-            if r.Status()? == GattCommunicationStatus::Success {
-                services = r.Services()?.into_iter().collect();
-                break;
-            }
-            last_err = format!("{:?}", r.Status()?);
-            eprintln!("  GATT discovery attempt {attempt} failed ({last_err}), retrying...");
-            std::thread::sleep(Duration::from_millis(800));
-        }
-        if services.is_empty() {
-            bail!(
-                "could not discover GATT services ({last_err}). Is the soundbar on and not connected to your phone?"
-            );
-        }
-
-        let mut chars = Vec::new();
-        let mut denied = 0;
-        for svc in &services {
-            // Open shared so several vizio-ctl instances (or other apps) can
-            // coexist.
-            let _ = svc
-                .OpenAsync(GattSharingMode::SharedReadAndWrite)
-                .and_then(|op| op.join());
-            let r = svc
-                .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)?
-                .join()?;
-            if r.Status()? != GattCommunicationStatus::Success {
-                if r.Status()? == GattCommunicationStatus::AccessDenied {
-                    denied += 1;
-                }
-                if cli.verbose {
-                    eprintln!(
-                        "  service {} characteristics: {:?}",
-                        uuid_str(&svc.Uuid()?),
-                        r.Status()?
-                    );
-                }
-                continue;
-            }
-            let service_uuid = svc.Uuid()?;
-            for ch in r.Characteristics()? {
-                chars.push(CharInfo {
-                    attr_handle: ch.AttributeHandle()?,
-                    uuid: ch.Uuid()?,
-                    props: ch.CharacteristicProperties()?.0,
-                    service_uuid,
-                    ch,
-                });
-            }
-        }
-
-        // Windows may report either the characteristic declaration handle or
-        // the value handle; pick whichever offset matches the handles
-        // from the capture.
-        let offset = [0i32, 1, -1]
-            .into_iter()
-            .max_by_key(|off| {
-                KNOWN_HANDLES
-                    .iter()
-                    .filter(|&&h| chars.iter().any(|c| c.attr_handle as i32 + off == h as i32))
-                    .count()
-            })
-            .unwrap();
-        let matched = KNOWN_HANDLES
-            .iter()
-            .filter(|&&h| {
-                chars
-                    .iter()
-                    .any(|c| c.attr_handle as i32 + offset == h as i32)
-            })
-            .count();
-        if cli.verbose {
-            eprintln!(
-                "  {} services, {} characteristics, handle offset {offset:+}, {matched}/{} known handles matched",
-                services.len(),
-                chars.len(),
-                KNOWN_HANDLES.len()
-            );
-        }
-        if matched < 3 {
-            if denied > 0 {
-                bail!(
-                    "access denied to {denied} GATT service(s) - another program (e.g. an older \
-                     `vizio-ctl shell` still running) has the soundbar open exclusively. Close it and retry."
-                );
-            }
-            eprintln!(
-                "WARNING: GATT layout doesn't match the capture ({matched}/{} handles). \
-                 Run `dump` to inspect.",
-                KNOWN_HANDLES.len()
-            );
-        }
-
-        save_cached_addr(addr);
         let (tx, rx) = channel();
+        let last_volume: Arc<Mutex<Option<u8>>> = Arc::default();
+        let live_print: Arc<AtomicBool> = Arc::default();
+
+        let tx_clone = tx.clone();
+        let last_vol = last_volume.clone();
+        let live_pr = live_print.clone();
+
+        let on_notify: bt::NotifyHandler = Arc::new(move |handle: u16, v: Vec<u8>| {
+            if handle == H_VOLUME && v.len() == 1 {
+                let mut last = last_vol.lock().unwrap();
+                let changed = *last != Some(v[0]);
+                *last = Some(v[0]);
+                if changed && live_pr.load(Ordering::SeqCst) {
+                    print!("\r[volume changed to {}]\nvizio> ", v[0]);
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_MUTE && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = if v[0] != 0 { "on (muted)" } else { "off" };
+                    print!("\r[mute changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_EQ && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = EqMode::from_u8(v[0])
+                        .map(|m| m.as_str())
+                        .unwrap_or("unknown");
+                    print!("\r[EQ mode changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if live_pr.load(Ordering::SeqCst) && handle != H_AUTH_STATUS {
+                print!("\r[notify 0x{handle:04x} -> {}]\nvizio> ", hex(&v));
+                let _ = std::io::stdout().flush();
+            }
+            let _ = tx_clone.send((handle, v));
+        });
+
+        let conn = bt::BleConnection::connect(cli, on_notify)?;
         Ok(Self {
-            device,
-            session,
-            services,
-            chars,
-            offset,
-            tx,
+            conn,
             rx,
             subscribed: Vec::new(),
             token: None,
             verbose: cli.verbose,
             max_volume: cli.max_volume.min(MAX_VOLUME),
-            last_volume: Arc::default(),
-            live_print: Arc::default(),
+            last_volume,
+            live_print,
         })
     }
 
-    fn value_handle(&self, c: &CharInfo) -> u16 {
-        (c.attr_handle as i32 + self.offset) as u16
-    }
-
-    fn char_for(&self, handle: u16) -> Result<&CharInfo> {
-        self.chars
-            .iter()
-            .find(|c| self.value_handle(c) == handle)
-            .ok_or_else(|| anyhow!("no characteristic with handle 0x{handle:04x}"))
-    }
-
     fn read(&self, handle: u16) -> Result<Vec<u8>> {
-        let c = self.char_for(handle)?;
-        let r =
-            c.ch.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?
-                .join()?;
-        let st = r.Status()?;
-        if st != GattCommunicationStatus::Success {
-            let pe = r.ProtocolError().and_then(|p| p.Value()).ok();
-            bail!("read 0x{handle:04x} failed: {st:?} (ATT error {pe:?})");
-        }
-        let v = buf_to_vec(&r.Value()?)?;
-        if self.verbose {
-            eprintln!(
-                "  read  0x{handle:04x} -> {} \"{}\"",
-                hex(&v),
-                printable(&v)
-            );
-        }
-        Ok(v)
+        self.conn.read(handle)
     }
 
     fn write_raw(&self, handle: u16, data: &[u8], with_response: Option<bool>) -> Result<()> {
-        let c = self.char_for(handle)?;
-        let with_response = with_response
-            .unwrap_or(c.props & GattCharacteristicProperties::WriteWithoutResponse.0 == 0);
-        let opt = if with_response {
-            GattWriteOption::WriteWithResponse
-        } else {
-            GattWriteOption::WriteWithoutResponse
-        };
-        if self.verbose {
-            eprintln!(
-                "  write 0x{handle:04x} <- {} \"{}\" ({})",
-                hex(data),
-                printable(data),
-                if with_response { "req" } else { "cmd" }
-            );
-        }
-        let st =
-            c.ch.WriteValueWithOptionAsync(&vec_to_buf(data)?, opt)?
-                .join()?;
-        if st != GattCommunicationStatus::Success {
-            bail!("write 0x{handle:04x} failed: {st:?}");
-        }
-        Ok(())
+        self.conn.write(handle, data, with_response)
     }
 
     /// Write `"<token>:" + payload` like the app does for every control.
@@ -832,60 +448,7 @@ impl Soundbar {
         if self.subscribed.contains(&handle) {
             return Ok(());
         }
-        let c = self.char_for(handle)?;
-        let cccd = if c.props & GattCharacteristicProperties::Notify.0 != 0 {
-            GattClientCharacteristicConfigurationDescriptorValue::Notify
-        } else if c.props & GattCharacteristicProperties::Indicate.0 != 0 {
-            GattClientCharacteristicConfigurationDescriptorValue::Indicate
-        } else {
-            bail!("0x{handle:04x} does not support notifications");
-        };
-        let tx = self.tx.clone();
-        let last_volume = self.last_volume.clone();
-        let live_print = self.live_print.clone();
-        c.ch.ValueChanged(&TypedEventHandler::<
-            GattCharacteristic,
-            GattValueChangedEventArgs,
-        >::new(move |_, args| {
-            if let Some(a) = args.as_ref() {
-                if let Ok(v) = buf_to_vec(&a.CharacteristicValue()?) {
-                    if handle == H_VOLUME && v.len() == 1 {
-                        let mut last = last_volume.lock().unwrap();
-                        let changed = *last != Some(v[0]);
-                        *last = Some(v[0]);
-                        if changed && live_print.load(Ordering::SeqCst) {
-                            print!("\r[volume changed to {}]\nvizio> ", v[0]);
-                            let _ = std::io::stdout().flush();
-                        }
-                    } else if handle == H_MUTE && v.len() == 1 {
-                        if live_print.load(Ordering::SeqCst) {
-                            let s = if v[0] != 0 { "on (muted)" } else { "off" };
-                            print!("\r[mute changed to {s}]\nvizio> ");
-                            let _ = std::io::stdout().flush();
-                        }
-                    } else if handle == H_EQ && v.len() == 1 {
-                        if live_print.load(Ordering::SeqCst) {
-                            let s = EqMode::from_u8(v[0])
-                                .map(|m| m.as_str())
-                                .unwrap_or("unknown");
-                            print!("\r[EQ mode changed to {s}]\nvizio> ");
-                            let _ = std::io::stdout().flush();
-                        }
-                    } else if live_print.load(Ordering::SeqCst) && handle != H_AUTH_STATUS {
-                        print!("\r[notify 0x{handle:04x} -> {}]\nvizio> ", hex(&v));
-                        let _ = std::io::stdout().flush();
-                    }
-                    let _ = tx.send((handle, v));
-                }
-            }
-            Ok(())
-        }))?;
-        let st =
-            c.ch.WriteClientCharacteristicConfigurationDescriptorAsync(cccd)?
-                .join()?;
-        if st != GattCommunicationStatus::Success {
-            bail!("subscribe 0x{handle:04x} failed: {st:?}");
-        }
+        self.conn.subscribe(handle)?;
         self.subscribed.push(handle);
         Ok(())
     }
@@ -1064,11 +627,10 @@ impl Soundbar {
 
     fn snapshot_all(&self) -> HashMap<u16, Vec<u8>> {
         let mut map = HashMap::new();
-        for c in &self.chars {
-            if c.props & GattCharacteristicProperties::Read.0 != 0 {
-                let h = self.value_handle(c);
-                if let Ok(v) = self.read(h) {
-                    map.insert(h, v);
+        for c in self.conn.characteristics() {
+            if c.props.can_read() {
+                if let Ok(v) = self.read(c.handle) {
+                    map.insert(c.handle, v);
                 }
             }
         }
@@ -1077,15 +639,11 @@ impl Soundbar {
 
     fn subscribe_all_notify(&mut self) -> usize {
         let handles: Vec<u16> = self
-            .chars
+            .conn
+            .characteristics()
             .iter()
-            .filter(|c| {
-                c.props
-                    & (GattCharacteristicProperties::Notify.0
-                        | GattCharacteristicProperties::Indicate.0)
-                    != 0
-            })
-            .map(|c| self.value_handle(c))
+            .filter(|c| c.props.can_notify())
+            .map(|c| c.handle)
             .collect();
         let mut count = 0;
         for h in handles {
@@ -1097,24 +655,19 @@ impl Soundbar {
     }
 
     fn print_info(&self) -> Result<()> {
-        println!(
-            "Address      : {}",
-            fmt_addr(self.device.BluetoothAddress()?)
-        );
-        println!("Windows name : {}", self.device.Name()?);
-        println!(
-            "Connected    : {}",
-            self.device.ConnectionStatus()? == BluetoothConnectionStatus::Connected
-        );
-        if let Ok(p) = self.device.DeviceInformation().and_then(|d| d.Pairing()) {
-            println!("OS paired    : {}", p.IsPaired()?);
+        let info = self.conn.device_info()?;
+        println!("Address      : {}", bt::fmt_addr(info.address));
+        println!("Device name  : {}", info.name);
+        println!("Connected    : {}", info.connected);
+        if let Some(paired) = info.paired {
+            println!("OS paired    : {paired}");
         }
         if let Some(t) = &self.token {
             println!("Session token: {}", printable(t));
         }
         // Standard GATT strings (Device Information service etc.), if exposed.
-        for c in &self.chars {
-            let label = match short_uuid(&c.uuid) {
+        for c in self.conn.characteristics() {
+            let label = match c.uuid.short_uuid() {
                 Some(0x2A24) => "Model",
                 Some(0x2A25) => "Serial",
                 Some(0x2A26) => "Firmware",
@@ -1123,7 +676,7 @@ impl Soundbar {
                 Some(0x2A29) => "Manufacturer",
                 _ => continue,
             };
-            if let Ok(v) = self.read(self.value_handle(c)) {
+            if let Ok(v) = self.read(c.handle) {
                 println!(
                     "{label:<13}: {}",
                     String::from_utf8_lossy(&v).trim_end_matches('\0')
@@ -1131,7 +684,7 @@ impl Soundbar {
             }
         }
         for &(h, label, fmt) in INFO_FIELDS {
-            if self.char_for(h).is_err() {
+            if !self.conn.characteristics().iter().any(|c| c.handle == h) {
                 continue;
             }
             match self.read(h) {
@@ -1161,25 +714,20 @@ impl Soundbar {
 
     fn dump(&self) -> Result<()> {
         println!(
-            "handle offset: {:+} (Windows AttributeHandle -> ATT value handle)",
-            self.offset
+            "handle offset: {:+} (AttributeHandle -> ATT value handle)",
+            self.conn.handle_offset()
         );
         let mut last_svc = None;
-        let mut chars: Vec<&CharInfo> = self.chars.iter().collect();
-        chars.sort_by_key(|c| c.attr_handle);
+        let mut chars = self.conn.characteristics().to_vec();
+        chars.sort_by_key(|c| c.handle);
         for c in chars {
             if last_svc != Some(c.service_uuid) {
-                println!("\nService {}", uuid_str(&c.service_uuid));
+                println!("\nService {}", c.service_uuid);
                 last_svc = Some(c.service_uuid);
             }
-            let h = self.value_handle(c);
-            let mut line = format!(
-                "  0x{h:04x}  {:<38} [{}]",
-                uuid_str(&c.uuid),
-                props_str(c.props)
-            );
-            if c.props & GattCharacteristicProperties::Read.0 != 0 {
-                match self.read(h) {
+            let mut line = format!("  0x{:04x}  {:<38} [{}]", c.handle, c.uuid, c.props);
+            if c.props.can_read() {
+                match self.read(c.handle) {
                     Ok(v) => line += &format!("  = {}  \"{}\"", hex(&v), printable(&v)),
                     Err(e) => line += &format!("  <{e}>"),
                 }
@@ -1190,13 +738,7 @@ impl Soundbar {
     }
 
     fn close(self) {
-        for s in &self.services {
-            let _ = s.Close();
-        }
-        if let Some(s) = &self.session {
-            let _ = s.Close();
-        }
-        let _ = self.device.Close();
+        self.conn.close();
     }
 }
 
@@ -1206,11 +748,11 @@ impl Soundbar {
 
 fn cmd_scan(cli: &Cli) -> Result<()> {
     println!("Paired devices:");
-    for (name, addr, kind) in paired_devices().unwrap_or_default() {
-        println!("  {}  {:<8} {name}", fmt_addr(addr), kind);
+    for (name, addr, kind) in bt::paired_devices().unwrap_or_default() {
+        println!("  {}  {:<8} {name}", bt::fmt_addr(addr), kind);
     }
     println!("\nScanning BLE for {}s...", cli.scan_secs);
-    let mut seen: Vec<_> = scan(cli.scan_secs, None)?.into_iter().collect();
+    let mut seen: Vec<_> = bt::scan(cli.scan_secs, None)?.into_iter().collect();
     seen.sort_by_key(|(_, (_, rssi))| -rssi);
     for (addr, (name, rssi)) in seen {
         let mark = if name.to_lowercase().contains(&cli.name.to_lowercase()) {
@@ -1218,76 +760,17 @@ fn cmd_scan(cli: &Cli) -> Result<()> {
         } else {
             ""
         };
-        println!("  {}  {rssi:>4} dBm  {name}{mark}", fmt_addr(addr));
+        println!("  {}  {rssi:>4} dBm  {name}{mark}", bt::fmt_addr(addr));
     }
     Ok(())
 }
 
 fn cmd_pair(cli: &Cli) -> Result<()> {
-    let device = find_device(cli)?;
-    let addr = device.BluetoothAddress()?;
-    let pairing = device.DeviceInformation()?.Pairing()?;
-    if pairing.IsPaired()? {
-        println!("{} is already paired.", fmt_addr(addr));
-        save_cached_addr(addr);
-        return Ok(());
-    }
-    println!("Pairing with {} ({})...", device.Name()?, fmt_addr(addr));
-    let custom: DeviceInformationCustomPairing = pairing.Custom()?;
-    custom.PairingRequested(&TypedEventHandler::<
-        DeviceInformationCustomPairing,
-        DevicePairingRequestedEventArgs,
-    >::new(|_, args| {
-        let Some(a) = args.as_ref() else {
-            return Ok(());
-        };
-        let kind = a.PairingKind()?;
-        if kind == DevicePairingKinds::ConfirmOnly {
-            a.Accept()?;
-        } else if kind == DevicePairingKinds::ConfirmPinMatch
-            || kind == DevicePairingKinds::DisplayPin
-        {
-            println!("PIN: {} (accepting)", a.Pin()?);
-            a.Accept()?;
-        } else if kind == DevicePairingKinds::ProvidePin {
-            print!("Enter PIN: ");
-            let _ = std::io::stdout().flush();
-            let mut s = String::new();
-            let _ = std::io::stdin().read_line(&mut s);
-            a.AcceptWithPin(&HSTRING::from(s.trim()))?;
-        } else {
-            a.Accept()?;
-        }
-        Ok(())
-    }))?;
-    let kinds = DevicePairingKinds(
-        DevicePairingKinds::ConfirmOnly.0
-            | DevicePairingKinds::ConfirmPinMatch.0
-            | DevicePairingKinds::DisplayPin.0
-            | DevicePairingKinds::ProvidePin.0,
-    );
-    let status = custom.PairAsync(kinds)?.join()?.Status()?;
-    if status == DevicePairingResultStatus::Paired
-        || status == DevicePairingResultStatus::AlreadyPaired
-    {
-        println!("Paired.");
-        save_cached_addr(addr);
-        Ok(())
-    } else {
-        bail!("pairing failed: {status:?}")
-    }
+    bt::pair(cli)
 }
 
 fn cmd_unpair(cli: &Cli) -> Result<()> {
-    let device = find_device(cli)?;
-    let st = device
-        .DeviceInformation()?
-        .Pairing()?
-        .UnpairAsync()?
-        .join()?
-        .Status()?;
-    println!("Unpair: {st:?}");
-    Ok(())
+    bt::unpair(cli)
 }
 
 fn apply_volume(sb: &Soundbar, action: &VolAction) -> Result<()> {
@@ -1350,15 +833,11 @@ fn apply_eq(sb: &Soundbar, mode: Option<EqMode>) -> Result<()> {
 
 fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     let handles: Vec<u16> = sb
-        .chars
+        .conn
+        .characteristics()
         .iter()
-        .filter(|c| {
-            c.props
-                & (GattCharacteristicProperties::Notify.0
-                    | GattCharacteristicProperties::Indicate.0)
-                != 0
-        })
-        .map(|c| sb.value_handle(c))
+        .filter(|c| c.props.can_notify())
+        .map(|c| c.handle)
         .collect();
     for h in handles {
         match sb.subscribe(h) {
@@ -1651,11 +1130,7 @@ fn run(cli: Cli) -> Result<()> {
 fn main() {
     if let Err(e) = run(Cli::parse()) {
         eprintln!("error: {e:#}");
-        if format!("{e:#}").contains("0x800710DF") {
-            eprintln!(
-                "hint: Bluetooth looks turned off - enable it in Windows Settings > Bluetooth & devices."
-            );
-        }
+        bt::print_platform_error_hint(&e);
         std::process::exit(1);
     }
 }
