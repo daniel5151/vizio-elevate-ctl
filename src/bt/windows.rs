@@ -585,20 +585,35 @@ impl BleConnection {
         })
     }
 
+    /// Returns true if the BLE device is currently connected at the OS level.
+    pub fn is_connected(&self) -> bool {
+        self.device
+            .ConnectionStatus()
+            .map(|s| s == BluetoothConnectionStatus::Connected)
+            .unwrap_or(false)
+    }
+
     /// Returns handle offset between Windows AttributeHandle and ATT value handle.
     pub fn handle_offset(&self) -> i32 {
         self.offset
     }
 
     /// Close GATT services, session, and device connection.
-    pub fn close(self) {
+    pub fn close(&self) {
         for s in &self.services {
             let _ = s.Close();
         }
         if let Some(s) = &self.session {
+            let _ = s.SetMaintainConnection(false);
             let _ = s.Close();
         }
         let _ = self.device.Close();
+    }
+}
+
+impl Drop for BleConnection {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 

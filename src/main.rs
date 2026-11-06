@@ -97,7 +97,7 @@ enum Fmt {
 // CLI
 // ---------------------------------------------------------------------------
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(version, about = "Control a VIZIO Elevate soundbar over Bluetooth LE")]
 pub(crate) struct Cli {
     /// BLE address of the soundbar (AA:BB:CC:DD:EE:FF). Remembered after first
@@ -125,7 +125,7 @@ pub(crate) struct Cli {
     cmd: Cmd,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Cmd {
     /// Scan for nearby BLE devices and list paired ones.
     Scan,
@@ -226,6 +226,12 @@ enum ShellCmd {
         /// Optional target (e.g. "all").
         target: Option<String>,
     },
+    /// Disconnect and release the Bluetooth connection (allowing phone app to connect).
+    #[command(alias = "disc", alias = "release")]
+    Disconnect,
+    /// Reconnect and re-authenticate with the soundbar.
+    #[command(alias = "rec", alias = "connect")]
+    Reconnect,
     /// Subscribe to all notifications and print them live at prompt.
     Watch,
     /// Exit the interactive shell.
@@ -429,7 +435,9 @@ pub(crate) fn printable(b: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 struct Soundbar {
-    conn: bt::BleConnection,
+    cli: Cli,
+    conn: Option<bt::BleConnection>,
+    on_notify: bt::NotifyHandler,
     rx: Receiver<(u16, Vec<u8>)>,
     subscribed: Vec<u16>,
     token: Option<Vec<u8>>,
@@ -490,9 +498,11 @@ impl Soundbar {
             let _ = tx_clone.send((handle, v));
         });
 
-        let conn = bt::BleConnection::connect(cli, on_notify)?;
+        let conn = bt::BleConnection::connect(cli, on_notify.clone())?;
         Ok(Self {
-            conn,
+            cli: cli.clone(),
+            conn: Some(conn),
+            on_notify,
             rx,
             subscribed: Vec::new(),
             token: None,
@@ -503,16 +513,98 @@ impl Soundbar {
         })
     }
 
-    fn read(&self, handle: u16) -> Result<Vec<u8>> {
-        self.conn.read(handle)
+    /// Returns true if the soundbar is currently connected.
+    fn is_connected(&self) -> bool {
+        self.conn.as_ref().is_some_and(|c| c.is_connected())
     }
 
-    fn write_raw(&self, handle: u16, data: &[u8], with_response: Option<bool>) -> Result<()> {
-        self.conn.write(handle, data, with_response)
+    /// Explicitly disconnect from the soundbar, releasing the connection
+    /// so the mobile app or another device can connect.
+    fn disconnect(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            conn.close();
+            println!("Disconnected from soundbar.");
+        } else {
+            println!("Already disconnected.");
+        }
+        self.token = None;
+    }
+
+    /// Reconnect and re-authenticate with the soundbar.
+    fn reconnect(&mut self) -> Result<()> {
+        if let Some(conn) = self.conn.take() {
+            conn.close();
+        }
+        self.token = None;
+        let prev_subscribed = std::mem::take(&mut self.subscribed);
+
+        eprintln!("Connecting to soundbar...");
+        let conn = bt::BleConnection::connect(&self.cli, self.on_notify.clone())?;
+        self.conn = Some(conn);
+        eprintln!("Authenticating...");
+        self.authenticate()
+            .context("authentication handshake failed")?;
+
+        for h in prev_subscribed {
+            let _ = self.subscribe(h);
+        }
+
+        eprintln!("Connected and authenticated.");
+        Ok(())
+    }
+
+    /// Ensure we are connected and authenticated before running an operation.
+    fn ensure_connected(&mut self) -> Result<()> {
+        if !self.is_connected() {
+            self.reconnect()?;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, handle: u16) -> Result<Vec<u8>> {
+        self.ensure_connected()?;
+        let conn = self.conn.as_ref().unwrap();
+        match conn.read(handle) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if !self.is_connected() {
+                    eprintln!("  connection lost, reconnecting...");
+                    self.reconnect()?;
+                    self.conn.as_ref().unwrap().read(handle)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    fn write_raw(&mut self, handle: u16, data: &[u8], with_response: Option<bool>) -> Result<()> {
+        self.ensure_connected()?;
+        let conn = self.conn.as_ref().unwrap();
+        match conn.write(handle, data, with_response) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if !self.is_connected() {
+                    eprintln!("  connection lost, reconnecting...");
+                    self.reconnect()?;
+                    self.conn
+                        .as_ref()
+                        .unwrap()
+                        .write(handle, data, with_response)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     /// Write `"<token>:" + payload` like the app does for every control.
-    fn write_cmd(&self, handle: u16, payload: &[u8]) -> Result<()> {
+    fn write_cmd(&mut self, handle: u16, payload: &[u8]) -> Result<()> {
+        self.ensure_connected()?;
+        if self.token.is_none() {
+            self.authenticate()
+                .context("authentication handshake failed")?;
+        }
         let token = self
             .token
             .as_ref()
@@ -527,7 +619,8 @@ impl Soundbar {
         if self.subscribed.contains(&handle) {
             return Ok(());
         }
-        self.conn.subscribe(handle)?;
+        self.ensure_connected()?;
+        self.conn.as_mut().unwrap().subscribe(handle)?;
         self.subscribed.push(handle);
         Ok(())
     }
@@ -606,7 +699,7 @@ impl Soundbar {
         Ok(())
     }
 
-    fn volume(&self) -> Result<u8> {
+    fn volume(&mut self) -> Result<u8> {
         let v = self
             .read(H_VOLUME)?
             .first()
@@ -619,7 +712,7 @@ impl Soundbar {
     /// Write one volume value and return the level the soundbar reports back.
     /// Notifications repeating the old level (e.g. the unsolicited one sent
     /// right after subscribing) are skipped.
-    fn write_volume(&self, cur: u8, level: u8) -> Result<u8> {
+    fn write_volume(&mut self, cur: u8, level: u8) -> Result<u8> {
         self.drain();
         self.write_cmd(H_VOLUME, &[level])?;
         let deadline = Instant::now() + Duration::from_millis(1500);
@@ -636,7 +729,7 @@ impl Soundbar {
     /// The soundbar only moves one step per write (writing 11 at volume 8
     /// yields 9), so walk to the target one level at a time, like the app
     /// does.
-    fn set_volume(&self, level: u8) -> Result<u8> {
+    fn set_volume(&mut self, level: u8) -> Result<u8> {
         let target = level.min(self.max_volume);
         if level > target {
             eprintln!("(clamped to max volume {target})");
@@ -662,24 +755,24 @@ impl Soundbar {
         Ok(cur)
     }
 
-    fn mute(&self) -> Result<bool> {
+    fn mute(&mut self) -> Result<bool> {
         let v = self.read(H_MUTE)?;
         Ok(v.first().copied().unwrap_or(0) != 0)
     }
 
-    fn set_mute(&self, mute: bool) -> Result<bool> {
+    fn set_mute(&mut self, mute: bool) -> Result<bool> {
         self.drain();
         self.write_cmd(H_MUTE, &[if mute { 1 } else { 0 }])?;
         let _ = self.wait_notify(H_MUTE, Duration::from_millis(500));
         self.mute()
     }
 
-    fn toggle_mute(&self) -> Result<bool> {
+    fn toggle_mute(&mut self) -> Result<bool> {
         let cur = self.mute()?;
         self.set_mute(!cur)
     }
 
-    fn eq(&self) -> Result<EqMode> {
+    fn eq(&mut self) -> Result<EqMode> {
         let v = self.read(H_EQ)?;
         let byte = v
             .first()
@@ -688,14 +781,14 @@ impl Soundbar {
         EqMode::from_u8(byte).ok_or_else(|| anyhow!("unknown EQ mode byte: {byte}"))
     }
 
-    fn set_eq(&self, mode: EqMode) -> Result<EqMode> {
+    fn set_eq(&mut self, mode: EqMode) -> Result<EqMode> {
         self.drain();
         self.write_cmd(H_EQ, &[mode as u8])?;
         let _ = self.wait_notify(H_EQ, Duration::from_millis(500));
         self.eq()
     }
 
-    fn surround(&self) -> Result<SurroundMode> {
+    fn surround(&mut self) -> Result<SurroundMode> {
         let v = self.read(H_SURROUND)?;
         let byte = v
             .first()
@@ -704,38 +797,50 @@ impl Soundbar {
         SurroundMode::from_u8(byte).ok_or_else(|| anyhow!("unknown surround mode byte: {byte}"))
     }
 
-    fn set_surround(&self, mode: SurroundMode) -> Result<SurroundMode> {
+    fn set_surround(&mut self, mode: SurroundMode) -> Result<SurroundMode> {
         self.drain();
         self.write_cmd(H_SURROUND, &[mode as u8])?;
         let _ = self.wait_notify(H_SURROUND, Duration::from_millis(500));
         self.surround()
     }
 
-    fn snapshot_info(&self) -> HashMap<u16, Vec<u8>> {
+    fn snapshot_info(&mut self) -> Result<HashMap<u16, Vec<u8>>> {
+        self.ensure_connected()?;
         let mut map = HashMap::new();
         for &(h, _, _) in INFO_FIELDS {
             if let Ok(v) = self.read(h) {
                 map.insert(h, v);
             }
         }
-        map
+        if map.is_empty() {
+            bail!("failed to read any info fields (soundbar unreachable)");
+        }
+        Ok(map)
     }
 
-    fn snapshot_all(&self) -> HashMap<u16, Vec<u8>> {
+    fn snapshot_all(&mut self) -> Result<HashMap<u16, Vec<u8>>> {
+        self.ensure_connected()?;
+        let chars = self.conn.as_ref().unwrap().characteristics().to_vec();
         let mut map = HashMap::new();
-        for c in self.conn.characteristics() {
+        for c in &chars {
             if c.props.can_read() {
                 if let Ok(v) = self.read(c.handle) {
                     map.insert(c.handle, v);
                 }
             }
         }
-        map
+        if map.is_empty() {
+            bail!("failed to read any characteristics (soundbar unreachable)");
+        }
+        Ok(map)
     }
 
-    fn subscribe_all_notify(&mut self) -> usize {
+    fn subscribe_all_notify(&mut self) -> Result<usize> {
+        self.ensure_connected()?;
         let handles: Vec<u16> = self
             .conn
+            .as_ref()
+            .unwrap()
             .characteristics()
             .iter()
             .filter(|c| c.props.can_notify())
@@ -747,11 +852,12 @@ impl Soundbar {
                 count += 1;
             }
         }
-        count
+        Ok(count)
     }
 
-    fn print_info(&self) -> Result<()> {
-        let info = self.conn.device_info()?;
+    fn print_info(&mut self) -> Result<()> {
+        self.ensure_connected()?;
+        let info = self.conn.as_ref().unwrap().device_info()?;
         println!("Address      : {}", bt::fmt_addr(info.address));
         println!("Device name  : {}", info.name);
         println!("Connected    : {}", info.connected);
@@ -761,8 +867,9 @@ impl Soundbar {
         if let Some(t) = &self.token {
             println!("Session token: {}", printable(t));
         }
+        let chars = self.conn.as_ref().unwrap().characteristics().to_vec();
         // Standard GATT strings (Device Information service etc.), if exposed.
-        for c in self.conn.characteristics() {
+        for c in &chars {
             let label = match c.uuid.short_uuid() {
                 Some(0x2A24) => "Model",
                 Some(0x2A25) => "Serial",
@@ -780,7 +887,7 @@ impl Soundbar {
             }
         }
         for &(h, label, fmt) in INFO_FIELDS {
-            if !self.conn.characteristics().iter().any(|c| c.handle == h) {
+            if !chars.iter().any(|c| c.handle == h) {
                 continue;
             }
             match self.read(h) {
@@ -817,13 +924,15 @@ impl Soundbar {
         Ok(())
     }
 
-    fn dump(&self) -> Result<()> {
+    fn dump(&mut self) -> Result<()> {
+        self.ensure_connected()?;
+        let conn = self.conn.as_ref().unwrap();
         println!(
             "handle offset: {:+} (AttributeHandle -> ATT value handle)",
-            self.conn.handle_offset()
+            conn.handle_offset()
         );
         let mut last_svc = None;
-        let mut chars = self.conn.characteristics().to_vec();
+        let mut chars = conn.characteristics().to_vec();
         chars.sort_by_key(|c| c.handle);
         for c in chars {
             if last_svc != Some(c.service_uuid) {
@@ -842,8 +951,16 @@ impl Soundbar {
         Ok(())
     }
 
-    fn close(self) {
-        self.conn.close();
+    fn close(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            conn.close();
+        }
+    }
+}
+
+impl Drop for Soundbar {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -878,7 +995,7 @@ fn cmd_unpair(cli: &Cli) -> Result<()> {
     bt::unpair(cli)
 }
 
-fn apply_volume(sb: &Soundbar, action: &VolAction) -> Result<()> {
+fn apply_volume(sb: &mut Soundbar, action: &VolAction) -> Result<()> {
     match action {
         VolAction::Get => println!("Volume: {}", sb.volume()?),
         VolAction::Set { level } => println!("Volume: {}", sb.set_volume(*level)?),
@@ -900,7 +1017,7 @@ fn apply_volume(sb: &Soundbar, action: &VolAction) -> Result<()> {
     Ok(())
 }
 
-fn apply_mute(sb: &Soundbar, action: &MuteAction) -> Result<()> {
+fn apply_mute(sb: &mut Soundbar, action: &MuteAction) -> Result<()> {
     match action {
         MuteAction::Get => {
             let m = sb.mute()?;
@@ -922,7 +1039,7 @@ fn apply_mute(sb: &Soundbar, action: &MuteAction) -> Result<()> {
     Ok(())
 }
 
-fn apply_eq(sb: &Soundbar, mode: Option<EqMode>) -> Result<()> {
+fn apply_eq(sb: &mut Soundbar, mode: Option<EqMode>) -> Result<()> {
     match mode {
         Some(m) => {
             let res = sb.set_eq(m)?;
@@ -936,7 +1053,7 @@ fn apply_eq(sb: &Soundbar, mode: Option<EqMode>) -> Result<()> {
     Ok(())
 }
 
-fn apply_surround(sb: &Soundbar, mode: Option<SurroundMode>) -> Result<()> {
+fn apply_surround(sb: &mut Soundbar, mode: Option<SurroundMode>) -> Result<()> {
     match mode {
         Some(m) => {
             let res = sb.set_surround(m)?;
@@ -951,8 +1068,11 @@ fn apply_surround(sb: &Soundbar, mode: Option<SurroundMode>) -> Result<()> {
 }
 
 fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
+    sb.ensure_connected()?;
     let handles: Vec<u16> = sb
         .conn
+        .as_ref()
+        .unwrap()
         .characteristics()
         .iter()
         .filter(|c| c.props.can_notify())
@@ -1016,8 +1136,8 @@ fn preprocess_shell_line(line: &str) -> Option<String> {
     Some(line.to_string())
 }
 
-fn diff_info(sb: &Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) {
-    let cur = sb.snapshot_info();
+fn diff_info(sb: &mut Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) -> Result<()> {
+    let cur = sb.snapshot_info()?;
     if let Some(prev) = snap_info.take() {
         let mut diffs = Vec::new();
         for &(h, label, _) in INFO_FIELDS {
@@ -1063,10 +1183,11 @@ fn diff_info(sb: &Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) {
         );
     }
     *snap_info = Some(cur);
+    Ok(())
 }
 
-fn diff_all(sb: &Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) {
-    let cur = sb.snapshot_all();
+fn diff_all(sb: &mut Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) -> Result<()> {
+    let cur = sb.snapshot_all()?;
     if let Some(prev) = snap_all.take() {
         let mut diffs = Vec::new();
         for (&h, new) in &cur {
@@ -1118,6 +1239,7 @@ fn diff_all(sb: &Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) {
         );
     }
     *snap_all = Some(cur);
+    Ok(())
 }
 
 fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
@@ -1162,7 +1284,8 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
-         eq [movie|music|game|direct], surr [off|on|dual|front], d / diff [all], snap, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
+         eq [movie|music|game|direct], surr [off|on|dual|front], d / diff [all], snap, \
+         disc / disconnect, rec / reconnect, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );
     let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
     let mut snap_all: Option<HashMap<u16, Vec<u8>>> = None;
@@ -1201,27 +1324,37 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
             ShellCmd::Down { steps } => apply_volume(sb, &VolAction::Down { steps }),
             ShellCmd::Set { level } => apply_volume(sb, &VolAction::Set { level }),
             ShellCmd::Get => apply_volume(sb, &VolAction::Get),
+            ShellCmd::Disconnect => {
+                sb.disconnect();
+                Ok(())
+            }
+            ShellCmd::Reconnect => sb.reconnect(),
             ShellCmd::Watch => {
-                let count = sb.subscribe_all_notify();
+                let count = sb.subscribe_all_notify()?;
                 println!(
                     "Subscribed to {count} characteristics. Notifications will print live at prompt."
                 );
                 Ok(())
             }
             ShellCmd::Snap => {
-                snap_info = Some(sb.snapshot_info());
-                snap_all = Some(sb.snapshot_all());
-                println!("Snapshots updated as new baseline.");
+                let info = sb.snapshot_info()?;
+                let all = sb.snapshot_all()?;
+                println!(
+                    "Snapshots updated as new baseline ({} info fields, {} handles).",
+                    info.len(),
+                    all.len()
+                );
+                snap_info = Some(info);
+                snap_all = Some(all);
                 Ok(())
             }
             ShellCmd::Diff { all, target } => {
                 let is_all = all || target.as_deref() == Some("all");
                 if is_all {
-                    diff_all(sb, &mut snap_all);
+                    diff_all(sb, &mut snap_all)
                 } else {
-                    diff_info(sb, &mut snap_info);
+                    diff_info(sb, &mut snap_info)
                 }
-                Ok(())
             }
         };
 

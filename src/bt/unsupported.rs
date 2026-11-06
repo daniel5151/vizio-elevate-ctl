@@ -54,6 +54,11 @@ impl BleConnection {
         bail!("not implemented");
     }
 
+    /// Returns false on unsupported platforms.
+    pub fn is_connected(&self) -> bool {
+        false
+    }
+
     /// Characteristics (unsupported).
     pub fn characteristics(&self) -> &[GattCharInfo] {
         &[]
@@ -70,7 +75,7 @@ impl BleConnection {
     }
 
     /// Close (unsupported).
-    pub fn close(self) {}
+    pub fn close(&self) {}
 }
 
 /// Print platform troubleshooting hint (no-op).
