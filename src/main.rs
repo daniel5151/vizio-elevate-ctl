@@ -56,7 +56,7 @@ use windows::core::HSTRING;
 const H_INPUT_GUESS: u16 = 0x0052;
 const H_DEVICE_NAME: u16 = 0x0054;
 const H_DEVICE_TAG: u16 = 0x0056;
-const H_TOGGLE_6A: u16 = 0x006a;
+const H_MUTE: u16 = 0x006a;
 const H_MODE_76: u16 = 0x0076;
 const H_VOLUME: u16 = 0x0079;
 const H_MODE_7C: u16 = 0x007c;
@@ -71,7 +71,7 @@ const KNOWN_HANDLES: &[u16] = &[
     H_INPUT_GUESS,
     H_DEVICE_NAME,
     H_DEVICE_TAG,
-    H_TOGGLE_6A,
+    H_MUTE,
     H_MODE_76,
     H_VOLUME,
     H_MODE_7C,
@@ -88,14 +88,13 @@ const AUTH_SUFFIX: [u8; 14] = [
 
 const MAX_VOLUME: u8 = 100;
 
-/// Characteristics the app polls after authenticating. Only name + volume are
-/// confirmed.
+/// Characteristics the app polls after authenticating.
 const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_DEVICE_NAME, "Device name", Fmt::Str),
     (H_DEVICE_TAG, "Device tag", Fmt::Str),
     (H_VOLUME, "Volume", Fmt::U8),
-    (H_STATE_82, "0x0082 (unknown, maybe mute)", Fmt::U8),
-    (H_TOGGLE_6A, "0x006a (unknown, app toggled 1/0)", Fmt::U8),
+    (H_MUTE, "Mute", Fmt::Bool),
+    (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
     (H_MODE_76, "0x0076 (unknown, maybe EQ mode)", Fmt::U8),
     (H_INPUT_GUESS, "0x0052 (unknown, maybe input)", Fmt::U8),
     (H_MODE_7C, "0x007c (unknown)", Fmt::U8),
@@ -110,6 +109,7 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
 enum Fmt {
     Str,
     U8,
+    Bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +163,12 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<VolAction>,
     },
+    /// Get, toggle, or set mute.
+    #[command(alias = "m")]
+    Mute {
+        #[command(subcommand)]
+        action: Option<MuteAction>,
+    },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
     Read { handle: String },
     /// Write raw hex bytes to a handle. The session token prefix "<token>:" is
@@ -197,6 +203,21 @@ enum VolAction {
         #[arg(default_value_t = 1)]
         steps: u8,
     },
+}
+
+#[derive(Subcommand, Clone)]
+enum MuteAction {
+    /// Print current mute state.
+    Get,
+    /// Mute audio.
+    #[command(alias = "1")]
+    On,
+    /// Unmute audio.
+    #[command(alias = "0")]
+    Off,
+    /// Toggle mute state (default).
+    #[command(alias = "t")]
+    Toggle,
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +743,15 @@ impl Soundbar {
                             print!("\r[volume changed to {}]\nvizio> ", v[0]);
                             let _ = std::io::stdout().flush();
                         }
+                    } else if handle == H_MUTE && v.len() == 1 {
+                        if live_print.load(Ordering::SeqCst) {
+                            let s = if v[0] != 0 { "on (muted)" } else { "off" };
+                            print!("\r[mute changed to {s}]\nvizio> ");
+                            let _ = std::io::stdout().flush();
+                        }
+                    } else if live_print.load(Ordering::SeqCst) && handle != H_AUTH_STATUS {
+                        print!("\r[notify 0x{handle:04x} -> {}]\nvizio> ", hex(&v));
+                        let _ = std::io::stdout().flush();
                     }
                     let _ = tx.send((handle, v));
                 }
@@ -767,6 +797,7 @@ impl Soundbar {
             eprintln!("  (warning: {e})");
         }
         let _ = self.subscribe(H_VOLUME);
+        let _ = self.subscribe(H_MUTE);
 
         let tag = self.read(H_DEVICE_TAG).unwrap_or_default();
         self.drain();
@@ -865,6 +896,67 @@ impl Soundbar {
         Ok(cur)
     }
 
+    fn mute(&self) -> Result<bool> {
+        let v = self.read(H_MUTE)?;
+        Ok(v.first().copied().unwrap_or(0) != 0)
+    }
+
+    fn set_mute(&self, mute: bool) -> Result<bool> {
+        self.drain();
+        self.write_cmd(H_MUTE, &[if mute { 1 } else { 0 }])?;
+        let _ = self.wait_notify(H_MUTE, Duration::from_millis(500));
+        self.mute()
+    }
+
+    fn toggle_mute(&self) -> Result<bool> {
+        let cur = self.mute()?;
+        self.set_mute(!cur)
+    }
+
+    fn snapshot_info(&self) -> HashMap<u16, Vec<u8>> {
+        let mut map = HashMap::new();
+        for &(h, _, _) in INFO_FIELDS {
+            if let Ok(v) = self.read(h) {
+                map.insert(h, v);
+            }
+        }
+        map
+    }
+
+    fn snapshot_all(&self) -> HashMap<u16, Vec<u8>> {
+        let mut map = HashMap::new();
+        for c in &self.chars {
+            if c.props & GattCharacteristicProperties::Read.0 != 0 {
+                let h = self.value_handle(c);
+                if let Ok(v) = self.read(h) {
+                    map.insert(h, v);
+                }
+            }
+        }
+        map
+    }
+
+    fn subscribe_all_notify(&mut self) -> usize {
+        let handles: Vec<u16> = self
+            .chars
+            .iter()
+            .filter(|c| {
+                c.props
+                    & (GattCharacteristicProperties::Notify.0
+                        | GattCharacteristicProperties::Indicate.0)
+                    != 0
+            })
+            .map(|c| self.value_handle(c))
+            .collect();
+        let mut count = 0;
+        for h in handles {
+            if self.subscribe(h).is_ok() {
+                count += 1;
+            }
+        }
+        count
+    }
+
     fn print_info(&self) -> Result<()> {
         println!(
             "Address      : {}",
@@ -908,6 +1000,10 @@ impl Soundbar {
                     Fmt::Str => println!("{label:<13}: {}", String::from_utf8_lossy(&v)),
                     Fmt::U8 if v.len() == 1 => println!("{label:<13}: {}", v[0]),
                     Fmt::U8 => println!("{label:<13}: {}", hex(&v)),
+                    Fmt::Bool => {
+                        let b = v.first().copied().unwrap_or(0) != 0;
+                        println!("{label:<13}: {}", if b { "on (muted)" } else { "off" });
+                    }
                 },
                 Err(e) => println!("{label:<13}: <{e}>"),
             }
@@ -1068,6 +1164,28 @@ fn apply_volume(sb: &Soundbar, action: &VolAction) -> Result<()> {
     Ok(())
 }
 
+fn apply_mute(sb: &Soundbar, action: &MuteAction) -> Result<()> {
+    match action {
+        MuteAction::Get => {
+            let m = sb.mute()?;
+            println!("Mute: {}", if m { "on" } else { "off" });
+        }
+        MuteAction::On => {
+            sb.set_mute(true)?;
+            println!("Mute: on");
+        }
+        MuteAction::Off => {
+            sb.set_mute(false)?;
+            println!("Mute: off");
+        }
+        MuteAction::Toggle => {
+            let m = sb.toggle_mute()?;
+            println!("Mute: {}", if m { "on" } else { "off" });
+        }
+    }
+    Ok(())
+}
+
 fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     let handles: Vec<u16> = sb
         .chars
@@ -1104,9 +1222,11 @@ fn parse_shell_line(line: &str) -> Vec<&str> {
 
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
-        "Commands: + / up [n], - / down [n], <number> / set <n>, get, info, read <h>, \
-         write <h> <hex>, q"
+        "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
+         d / diff [all], snap, watch, info, read <h>, write <h> <hex>, q"
     );
+    let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
+    let mut snap_all: Option<HashMap<u16, Vec<u8>>> = None;
     let stdin = std::io::stdin();
     loop {
         // Queued notifications were either already printed live or belong to
@@ -1139,6 +1259,106 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
                     level: x.parse().unwrap(),
                 },
             ),
+            ["m" | "mute"] => apply_mute(sb, &MuteAction::Toggle),
+            ["mute", "on" | "1"] => apply_mute(sb, &MuteAction::On),
+            ["mute", "off" | "0"] => apply_mute(sb, &MuteAction::Off),
+            ["mute", "get" | "status"] => apply_mute(sb, &MuteAction::Get),
+            ["mute", "toggle" | "t"] => apply_mute(sb, &MuteAction::Toggle),
+            ["watch"] => {
+                let count = sb.subscribe_all_notify();
+                println!(
+                    "Subscribed to {count} characteristics. Notifications will print live at prompt."
+                );
+                Ok(())
+            }
+            ["snap" | "snapshot"] => {
+                snap_info = Some(sb.snapshot_info());
+                snap_all = Some(sb.snapshot_all());
+                println!("Snapshots updated as new baseline.");
+                Ok(())
+            }
+            ["d" | "diff"] => {
+                let cur = sb.snapshot_info();
+                if let Some(prev) = snap_info.take() {
+                    let mut diffs = Vec::new();
+                    for &(h, label, _) in INFO_FIELDS {
+                        let old = prev.get(&h);
+                        let new = cur.get(&h);
+                        if old != new {
+                            diffs.push((h, label, old, new));
+                        }
+                    }
+                    if diffs.is_empty() {
+                        println!("No changes detected across {} fields.", cur.len());
+                    } else {
+                        println!("Changes detected:");
+                        for (h, label, old, new) in diffs {
+                            let fmt_val = |v: Option<&Vec<u8>>| match v {
+                                Some(b) if b.len() == 1 => format!("{} (0x{:02x})", b[0], b[0]),
+                                Some(b) => hex(b),
+                                None => "<none>".to_string(),
+                            };
+                            println!(
+                                "  0x{h:04x} ({label}): {} -> {}",
+                                fmt_val(old),
+                                fmt_val(new)
+                            );
+                        }
+                    }
+                } else {
+                    println!(
+                        "Baseline snapshot saved ({} fields). Press a button on the remote, then type 'diff'.",
+                        cur.len()
+                    );
+                }
+                snap_info = Some(cur);
+                Ok(())
+            }
+            ["d" | "diff", "all"] => {
+                let cur = sb.snapshot_all();
+                if let Some(prev) = snap_all.take() {
+                    let mut diffs = Vec::new();
+                    for (&h, new) in &cur {
+                        if let Some(old) = prev.get(&h) {
+                            if old != new {
+                                diffs.push((h, old, new));
+                            }
+                        }
+                    }
+                    diffs.sort_by_key(|&(h, _, _)| h);
+                    if diffs.is_empty() {
+                        println!("No changes detected across {} handles.", cur.len());
+                    } else {
+                        println!("Changes detected across all handles:");
+                        for (h, old, new) in diffs {
+                            let label = INFO_FIELDS
+                                .iter()
+                                .find(|(ih, _, _)| *ih == h)
+                                .map(|(_, l, _)| *l)
+                                .unwrap_or("unknown");
+                            let fmt_val = |b: &[u8]| {
+                                if b.len() == 1 {
+                                    format!("{} (0x{:02x})", b[0], b[0])
+                                } else {
+                                    format!("{} \"{}\"", hex(b), printable(b))
+                                }
+                            };
+                            println!(
+                                "  0x{h:04x} ({label}): {} -> {}",
+                                fmt_val(old),
+                                fmt_val(new)
+                            );
+                        }
+                    }
+                } else {
+                    println!(
+                        "Baseline snapshot of ALL handles saved ({} handles). Press a button on the remote, then type 'diff all'.",
+                        cur.len()
+                    );
+                }
+                snap_all = Some(cur);
+                Ok(())
+            }
             ["info"] => sb.print_info(),
             ["read", h] => parse_handle(h).and_then(|h| sb.read(h)).map(|v| {
                 println!("{}  \"{}\"", hex(&v), printable(&v));
@@ -1175,6 +1395,7 @@ fn run(cli: Cli) -> Result<()> {
         match &cli.cmd {
             Cmd::Info => sb.print_info(),
             Cmd::Volume { action } => apply_volume(&sb, action.as_ref().unwrap_or(&VolAction::Get)),
+            Cmd::Mute { action } => apply_mute(&sb, action.as_ref().unwrap_or(&MuteAction::Toggle)),
             Cmd::Read { handle } => {
                 let v = sb.read(parse_handle(handle)?)?;
                 println!("{}  \"{}\"", hex(&v), printable(&v));
