@@ -57,7 +57,7 @@ const H_INPUT_GUESS: u16 = 0x0052;
 const H_DEVICE_NAME: u16 = 0x0054;
 const H_DEVICE_TAG: u16 = 0x0056;
 const H_MUTE: u16 = 0x006a;
-const H_MODE_76: u16 = 0x0076;
+const H_EQ: u16 = 0x0076;
 const H_VOLUME: u16 = 0x0079;
 const H_MODE_7C: u16 = 0x007c;
 const H_STATE_82: u16 = 0x0082;
@@ -72,7 +72,7 @@ const KNOWN_HANDLES: &[u16] = &[
     H_DEVICE_NAME,
     H_DEVICE_TAG,
     H_MUTE,
-    H_MODE_76,
+    H_EQ,
     H_VOLUME,
     H_MODE_7C,
     H_STATE_82,
@@ -94,8 +94,8 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_DEVICE_TAG, "Device tag", Fmt::Str),
     (H_VOLUME, "Volume", Fmt::U8),
     (H_MUTE, "Mute", Fmt::Bool),
+    (H_EQ, "EQ Mode", Fmt::Eq),
     (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
-    (H_MODE_76, "0x0076 (unknown, maybe EQ mode)", Fmt::U8),
     (H_INPUT_GUESS, "0x0052 (unknown, maybe input)", Fmt::U8),
     (H_MODE_7C, "0x007c (unknown)", Fmt::U8),
     (0x0085, "0x0085 (unknown)", Fmt::U8),
@@ -110,6 +110,7 @@ enum Fmt {
     Str,
     U8,
     Bool,
+    Eq,
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +170,11 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<MuteAction>,
     },
+    /// Get or set the EQ mode.
+    Eq {
+        /// Mode to set (movie, music, game, direct). Omit to print current mode.
+        mode: Option<EqMode>,
+    },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
     Read { handle: String },
     /// Write raw hex bytes to a handle. The session token prefix "<token>:" is
@@ -218,6 +224,59 @@ enum MuteAction {
     /// Toggle mute state (default).
     #[command(alias = "t")]
     Toggle,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum EqMode {
+    /// Movie EQ preset.
+    Movie = 0,
+    /// Music EQ preset.
+    Music = 1,
+    /// Game EQ preset.
+    Game = 2,
+    /// Direct EQ preset (unprocessed source audio).
+    Direct = 3,
+}
+
+impl EqMode {
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Movie),
+            1 => Some(Self::Music),
+            2 => Some(Self::Game),
+            3 => Some(Self::Direct),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Movie => "Movie",
+            Self::Music => "Music",
+            Self::Game => "Game",
+            Self::Direct => "Direct",
+        }
+    }
+}
+
+impl std::fmt::Display for EqMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for EqMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "0" | "movie" => Ok(Self::Movie),
+            "1" | "music" => Ok(Self::Music),
+            "2" | "game" => Ok(Self::Game),
+            "3" | "direct" => Ok(Self::Direct),
+            _ => bail!("unknown EQ mode {s:?} (expected movie, music, game, or direct)"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +808,14 @@ impl Soundbar {
                             print!("\r[mute changed to {s}]\nvizio> ");
                             let _ = std::io::stdout().flush();
                         }
+                    } else if handle == H_EQ && v.len() == 1 {
+                        if live_print.load(Ordering::SeqCst) {
+                            let s = EqMode::from_u8(v[0])
+                                .map(|m| m.as_str())
+                                .unwrap_or("unknown");
+                            print!("\r[EQ mode changed to {s}]\nvizio> ");
+                            let _ = std::io::stdout().flush();
+                        }
                     } else if live_print.load(Ordering::SeqCst) && handle != H_AUTH_STATUS {
                         print!("\r[notify 0x{handle:04x} -> {}]\nvizio> ", hex(&v));
                         let _ = std::io::stdout().flush();
@@ -798,6 +865,7 @@ impl Soundbar {
         }
         let _ = self.subscribe(H_VOLUME);
         let _ = self.subscribe(H_MUTE);
+        let _ = self.subscribe(H_EQ);
 
         let tag = self.read(H_DEVICE_TAG).unwrap_or_default();
         self.drain();
@@ -913,6 +981,22 @@ impl Soundbar {
         self.set_mute(!cur)
     }
 
+    fn eq(&self) -> Result<EqMode> {
+        let v = self.read(H_EQ)?;
+        let byte = v
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("empty EQ value"))?;
+        EqMode::from_u8(byte).ok_or_else(|| anyhow!("unknown EQ mode byte: {byte}"))
+    }
+
+    fn set_eq(&self, mode: EqMode) -> Result<EqMode> {
+        self.drain();
+        self.write_cmd(H_EQ, &[mode as u8])?;
+        let _ = self.wait_notify(H_EQ, Duration::from_millis(500));
+        self.eq()
+    }
+
     fn snapshot_info(&self) -> HashMap<u16, Vec<u8>> {
         let mut map = HashMap::new();
         for &(h, _, _) in INFO_FIELDS {
@@ -1003,6 +1087,15 @@ impl Soundbar {
                     Fmt::Bool => {
                         let b = v.first().copied().unwrap_or(0) != 0;
                         println!("{label:<13}: {}", if b { "on (muted)" } else { "off" });
+                    }
+                    Fmt::Eq => {
+                        if let Some(&byte) = v.first() {
+                            if let Some(mode) = EqMode::from_u8(byte) {
+                                println!("{label:<13}: {mode} ({byte})");
+                            } else {
+                                println!("{label:<13}: unknown ({byte})");
+                            }
+                        }
                     }
                 },
                 Err(e) => println!("{label:<13}: <{e}>"),
@@ -1186,6 +1279,20 @@ fn apply_mute(sb: &Soundbar, action: &MuteAction) -> Result<()> {
     Ok(())
 }
 
+fn apply_eq(sb: &Soundbar, mode: Option<EqMode>) -> Result<()> {
+    match mode {
+        Some(m) => {
+            let res = sb.set_eq(m)?;
+            println!("EQ Mode: {res} ({})", res as u8);
+        }
+        None => {
+            let res = sb.eq()?;
+            println!("EQ Mode: {res} ({})", res as u8);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     let handles: Vec<u16> = sb
         .chars
@@ -1223,7 +1330,7 @@ fn parse_shell_line(line: &str) -> Vec<&str> {
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
-         d / diff [all], snap, watch, info, read <h>, write <h> <hex>, q"
+         eq [movie|music|game|direct], d / diff [all], snap, watch, info, read <h>, write <h> <hex>, q"
     );
     let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
     let mut snap_all: Option<HashMap<u16, Vec<u8>>> = None;
@@ -1264,6 +1371,14 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
             ["mute", "off" | "0"] => apply_mute(sb, &MuteAction::Off),
             ["mute", "get" | "status"] => apply_mute(sb, &MuteAction::Get),
             ["mute", "toggle" | "t"] => apply_mute(sb, &MuteAction::Toggle),
+            ["eq"] => apply_eq(sb, None),
+            ["eq", mode_str] => match mode_str.parse::<EqMode>() {
+                Ok(m) => apply_eq(sb, Some(m)),
+                Err(e) => {
+                    println!("error: {e}");
+                    Ok(())
+                }
+            },
             ["watch"] => {
                 let count = sb.subscribe_all_notify();
                 println!(
@@ -1294,6 +1409,12 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
                         println!("Changes detected:");
                         for (h, label, old, new) in diffs {
                             let fmt_val = |v: Option<&Vec<u8>>| match v {
+                                Some(b) if h == H_EQ && b.len() == 1 => {
+                                    let name = EqMode::from_u8(b[0])
+                                        .map(|m| m.as_str())
+                                        .unwrap_or("unknown");
+                                    format!("{name} ({})", b[0])
+                                }
                                 Some(b) if b.len() == 1 => format!("{} (0x{:02x})", b[0], b[0]),
                                 Some(b) => hex(b),
                                 None => "<none>".to_string(),
@@ -1337,7 +1458,12 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
                                 .map(|(_, l, _)| *l)
                                 .unwrap_or("unknown");
                             let fmt_val = |b: &[u8]| {
-                                if b.len() == 1 {
+                                if h == H_EQ && b.len() == 1 {
+                                    let name = EqMode::from_u8(b[0])
+                                        .map(|m| m.as_str())
+                                        .unwrap_or("unknown");
+                                    format!("{name} ({})", b[0])
+                                } else if b.len() == 1 {
                                     format!("{} (0x{:02x})", b[0], b[0])
                                 } else {
                                     format!("{} \"{}\"", hex(b), printable(b))
@@ -1396,6 +1522,7 @@ fn run(cli: Cli) -> Result<()> {
             Cmd::Info => sb.print_info(),
             Cmd::Volume { action } => apply_volume(&sb, action.as_ref().unwrap_or(&VolAction::Get)),
             Cmd::Mute { action } => apply_mute(&sb, action.as_ref().unwrap_or(&MuteAction::Toggle)),
+            Cmd::Eq { mode } => apply_eq(&sb, *mode),
             Cmd::Read { handle } => {
                 let v = sb.read(parse_handle(handle)?)?;
                 println!("{}  \"{}\"", hex(&v), printable(&v));

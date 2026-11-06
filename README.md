@@ -25,7 +25,9 @@ vizio-ctl volume set 25
 vizio-ctl volume up 3
 vizio-ctl volume down
 vizio-ctl mute                 # toggle mute (or on, off, get)
-vizio-ctl shell                # interactive; keeps connection open (+, -, m, diff, watch, get, q)
+vizio-ctl eq                   # print current EQ mode
+vizio-ctl eq movie             # set EQ mode (movie, music, game, direct)
+vizio-ctl shell                # interactive; keeps connection open (+, -, m, eq, diff, watch, get, q)
 vizio-ctl dump                 # every service/characteristic with ATT handles + values
 vizio-ctl monitor              # print all notifications
 vizio-ctl read 0x0076          # raw read
@@ -54,7 +56,7 @@ To reverse-engineer unknown settings (EQ modes, inputs, bass/treble, surround mo
      ```text
      vizio> diff
      Changes detected:
-       0x0076 (0x0076 (unknown, maybe EQ mode)): 3 (0x03) -> 1 (0x01)
+       0x0076 (EQ Mode): Music (1) -> Direct (3)
      ```
    - **`diff all` / `d all`**: Snapshot and diff **all ~50 readable GATT characteristics** across the device. Use this if a button press didn't show up in `diff` (meaning it's not in the known fields list yet).
    - **`snap`**: Re-takes the baseline snapshot at any time.
@@ -89,6 +91,7 @@ To reverse-engineer unknown settings (EQ modes, inputs, bass/treble, surround mo
 | 5    | read      | 0x00c5 | 8-char session token, e.g. `"371FD047"`                                           |
 | vol  | write cmd | 0x0079 | `"<token>:" <level>` → notify 0x0079 = `<level>`                                  |
 | mute | write cmd | 0x006a | `"<token>:" 01` (mute) / `00` (unmute)                                            |
+| eq   | write cmd | 0x0076 | `"<token>:" 00` (movie) / `01` (music) / `02` (game) / `03` (direct)             |
 
 The 14 trailing auth bytes were identical in two sessions with different challenges, so they're replayed as-is.
 Volume values are absolute levels (the app sends 0x15, 0x16, 0x17... for each "+" press), but the soundbar
