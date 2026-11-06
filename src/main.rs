@@ -40,11 +40,14 @@ const H_STATE_82: u16 = 0x0082;
 const H_AUTO_HDMI: u16 = 0x0085;
 const H_LEVEL_BASS: u16 = 0x0089;
 const H_LEVEL_TREBLE: u16 = 0x008c;
-const H_EVENT_8F: u16 = 0x008f;
+const H_DIALOG: u16 = 0x008f;
 const H_LEVEL_CENTER: u16 = 0x0092;
 const H_LEVEL_SUBWOOFER: u16 = 0x0095;
 const H_LEVEL_SURROUND: u16 = 0x0098;
 const H_LEVEL_BALANCE: u16 = 0x009b;
+const H_VIRTUAL_X: u16 = 0x00a2;
+const H_TRUVOLUME: u16 = 0x00a5;
+const H_NIGHT_MODE: u16 = 0x00a8;
 const H_SURROUND: u16 = 0x00ab;
 const H_ELEVATION_MODE: u16 = 0x00ae;
 const H_AUTH_STATUS: u16 = 0x00bf;
@@ -68,11 +71,14 @@ pub const KNOWN_HANDLES: &[u16] = &[
     H_AUTO_HDMI,
     H_LEVEL_BASS,
     H_LEVEL_TREBLE,
-    H_EVENT_8F,
+    H_DIALOG,
     H_LEVEL_CENTER,
     H_LEVEL_SUBWOOFER,
     H_LEVEL_SURROUND,
     H_LEVEL_BALANCE,
+    H_VIRTUAL_X,
+    H_TRUVOLUME,
+    H_NIGHT_MODE,
     H_SURROUND,
     H_ELEVATION_MODE,
     H_AUTH_STATUS,
@@ -95,11 +101,15 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_MUTE, "Mute", Fmt::Bool),
     (H_EQ, "EQ Mode", Fmt::Eq),
     (H_SURROUND, "Surround Mode", Fmt::Surround),
+    (H_VIRTUAL_X, "Virtual:X", Fmt::Bool),
+    (H_TRUVOLUME, "TruVolume", Fmt::Bool),
+    (H_NIGHT_MODE, "Night Mode", Fmt::Bool),
     (H_ELEVATION_MODE, "Elevation Mode", Fmt::Elevation),
     (H_SPEAKER_COLOR, "Speaker Color", Fmt::SpeakerColor),
     (H_POWER_LIGHT, "Power Light", Fmt::Bool),
     (H_AUTO_HDMI, "Auto HDMI", Fmt::Bool),
     (H_AV_DELAY, "AV Delay", Fmt::U8),
+    (H_DIALOG, "Clear Dialog", Fmt::U8),
     (H_LEVEL_BASS, "Bass", Fmt::I8),
     (H_LEVEL_TREBLE, "Treble", Fmt::I8),
     (H_LEVEL_CENTER, "Center", Fmt::I8),
@@ -109,7 +119,6 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
     (H_INPUT_GUESS, "0x0052 (unknown, maybe input)", Fmt::U8),
     (H_MODE_7C, "0x007c (unknown)", Fmt::U8),
-    (H_EVENT_8F, "0x008f (unknown)", Fmt::U8),
 ];
 
 #[derive(Clone, Copy)]
@@ -210,7 +219,8 @@ enum DeviceCmd {
     /// Get or set the elevate speakers LED color.
     #[command(alias = "speaker-color", alias = "led-color")]
     Color {
-        /// Color to set (off, rainbow, light-blue, yellow, purple, white, cyan, magenta). Omit to print current color.
+        /// Color to set (off, rainbow, light-blue, yellow, purple, white, cyan,
+        /// magenta). Omit to print current color.
         color: Option<SpeakerColor>,
     },
     /// Get, toggle, or set the power indicator light (LED).
@@ -231,7 +241,32 @@ enum DeviceCmd {
         /// Delay value to set (0-8). Omit to print current delay.
         delay: Option<u8>,
     },
-    /// Get or set audio levels (bass, treble, center, subwoofer, surround, balance).
+    /// Get or set clear dialog level (0-10).
+    #[command(alias = "dialogue", alias = "clear-dialog")]
+    Dialog {
+        /// Dialog level to set (0-10). Omit to print current level.
+        level: Option<u8>,
+    },
+    /// Get, toggle, or set DTS Virtual:X sound effect.
+    #[command(alias = "vx", alias = "virtualx", alias = "dts-x")]
+    VirtualX {
+        #[command(subcommand)]
+        action: Option<OnOffAction>,
+    },
+    /// Get, toggle, or set DTS TruVolume volume leveling.
+    #[command(name = "truvolume", alias = "truvol", alias = "tru-volume")]
+    TruVolume {
+        #[command(subcommand)]
+        action: Option<OnOffAction>,
+    },
+    /// Get, toggle, or set night mode.
+    #[command(alias = "night")]
+    NightMode {
+        #[command(subcommand)]
+        action: Option<OnOffAction>,
+    },
+    /// Get or set audio levels (bass, treble, center, subwoofer, surround,
+    /// balance).
     #[command(alias = "level")]
     Levels {
         #[command(subcommand)]
@@ -848,10 +883,30 @@ impl Soundbar {
                     );
                     let _ = std::io::stdout().flush();
                 }
-            } else if live_pr.load(Ordering::SeqCst)
-                && handle != H_AUTH_STATUS
-                && handle != H_EVENT_8F
-            {
+            } else if handle == H_DIALOG && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    print!("\r[dialog changed to {}]\nvizio> ", v[0]);
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_VIRTUAL_X && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = if v[0] != 0 { "on" } else { "off" };
+                    print!("\r[Virtual:X changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_TRUVOLUME && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = if v[0] != 0 { "on" } else { "off" };
+                    print!("\r[TruVolume changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if handle == H_NIGHT_MODE && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = if v[0] != 0 { "on" } else { "off" };
+                    print!("\r[night mode changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if live_pr.load(Ordering::SeqCst) && handle != H_AUTH_STATUS {
                 print!("\r[notify 0x{handle:04x} -> {}]\nvizio> ", hex(&v));
                 let _ = std::io::stdout().flush();
             }
@@ -1028,6 +1083,10 @@ impl Soundbar {
         let _ = self.subscribe(H_LEVEL_SUBWOOFER);
         let _ = self.subscribe(H_LEVEL_SURROUND);
         let _ = self.subscribe(H_LEVEL_BALANCE);
+        let _ = self.subscribe(H_DIALOG);
+        let _ = self.subscribe(H_VIRTUAL_X);
+        let _ = self.subscribe(H_TRUVOLUME);
+        let _ = self.subscribe(H_NIGHT_MODE);
 
         let tag = self.read(H_DEVICE_TAG).unwrap_or_default();
         self.drain();
@@ -1322,6 +1381,74 @@ impl Soundbar {
 
     fn set_surround_balance(&mut self, balance: i8) -> Result<i8> {
         self.write_level(H_LEVEL_BALANCE, balance)
+    }
+
+    fn dialog(&mut self) -> Result<u8> {
+        let v = self.read(H_DIALOG)?;
+        v.first()
+            .copied()
+            .ok_or_else(|| anyhow!("empty dialog value"))
+    }
+
+    fn set_dialog(&mut self, level: u8) -> Result<u8> {
+        if level > 10 {
+            bail!("dialog level {level} out of range (expected 0 to 10)");
+        }
+        self.drain();
+        self.write_cmd(H_DIALOG, &[level])?;
+        let _ = self.wait_notify(H_DIALOG, Duration::from_millis(500));
+        self.dialog()
+    }
+
+    fn virtual_x(&mut self) -> Result<bool> {
+        let v = self.read(H_VIRTUAL_X)?;
+        Ok(v.first().copied().unwrap_or(0) != 0)
+    }
+
+    fn set_virtual_x(&mut self, on: bool) -> Result<bool> {
+        self.drain();
+        self.write_cmd(H_VIRTUAL_X, &[if on { 1 } else { 0 }])?;
+        let _ = self.wait_notify(H_VIRTUAL_X, Duration::from_millis(500));
+        self.virtual_x()
+    }
+
+    fn toggle_virtual_x(&mut self) -> Result<bool> {
+        let cur = self.virtual_x()?;
+        self.set_virtual_x(!cur)
+    }
+
+    fn truvolume(&mut self) -> Result<bool> {
+        let v = self.read(H_TRUVOLUME)?;
+        Ok(v.first().copied().unwrap_or(0) != 0)
+    }
+
+    fn set_truvolume(&mut self, on: bool) -> Result<bool> {
+        self.drain();
+        self.write_cmd(H_TRUVOLUME, &[if on { 1 } else { 0 }])?;
+        let _ = self.wait_notify(H_TRUVOLUME, Duration::from_millis(500));
+        self.truvolume()
+    }
+
+    fn toggle_truvolume(&mut self) -> Result<bool> {
+        let cur = self.truvolume()?;
+        self.set_truvolume(!cur)
+    }
+
+    fn night_mode(&mut self) -> Result<bool> {
+        let v = self.read(H_NIGHT_MODE)?;
+        Ok(v.first().copied().unwrap_or(0) != 0)
+    }
+
+    fn set_night_mode(&mut self, on: bool) -> Result<bool> {
+        self.drain();
+        self.write_cmd(H_NIGHT_MODE, &[if on { 1 } else { 0 }])?;
+        let _ = self.wait_notify(H_NIGHT_MODE, Duration::from_millis(500));
+        self.night_mode()
+    }
+
+    fn toggle_night_mode(&mut self) -> Result<bool> {
+        let cur = self.night_mode()?;
+        self.set_night_mode(!cur)
     }
 
     fn snapshot_info(&mut self) -> Result<HashMap<u16, Vec<u8>>> {
@@ -1698,6 +1825,86 @@ fn apply_av_delay(sb: &mut Soundbar, delay: Option<u8>) -> Result<()> {
     Ok(())
 }
 
+fn apply_dialog(sb: &mut Soundbar, level: Option<u8>) -> Result<()> {
+    match level {
+        Some(l) => {
+            let res = sb.set_dialog(l)?;
+            println!("Clear Dialog: {res}");
+        }
+        None => {
+            let res = sb.dialog()?;
+            println!("Clear Dialog: {res}");
+        }
+    }
+    Ok(())
+}
+
+fn apply_virtual_x(sb: &mut Soundbar, action: Option<&OnOffAction>) -> Result<()> {
+    match action {
+        Some(OnOffAction::Get) | None => {
+            let on = sb.virtual_x()?;
+            println!("Virtual:X: {}", if on { "on" } else { "off" });
+        }
+        Some(OnOffAction::On) => {
+            sb.set_virtual_x(true)?;
+            println!("Virtual:X: on");
+        }
+        Some(OnOffAction::Off) => {
+            sb.set_virtual_x(false)?;
+            println!("Virtual:X: off");
+        }
+        Some(OnOffAction::Toggle) => {
+            let on = sb.toggle_virtual_x()?;
+            println!("Virtual:X: {}", if on { "on" } else { "off" });
+        }
+    }
+    Ok(())
+}
+
+fn apply_truvolume(sb: &mut Soundbar, action: Option<&OnOffAction>) -> Result<()> {
+    match action {
+        Some(OnOffAction::Get) | None => {
+            let on = sb.truvolume()?;
+            println!("TruVolume: {}", if on { "on" } else { "off" });
+        }
+        Some(OnOffAction::On) => {
+            sb.set_truvolume(true)?;
+            println!("TruVolume: on");
+        }
+        Some(OnOffAction::Off) => {
+            sb.set_truvolume(false)?;
+            println!("TruVolume: off");
+        }
+        Some(OnOffAction::Toggle) => {
+            let on = sb.toggle_truvolume()?;
+            println!("TruVolume: {}", if on { "on" } else { "off" });
+        }
+    }
+    Ok(())
+}
+
+fn apply_night_mode(sb: &mut Soundbar, action: Option<&OnOffAction>) -> Result<()> {
+    match action {
+        Some(OnOffAction::Get) | None => {
+            let on = sb.night_mode()?;
+            println!("Night Mode: {}", if on { "on" } else { "off" });
+        }
+        Some(OnOffAction::On) => {
+            sb.set_night_mode(true)?;
+            println!("Night Mode: on");
+        }
+        Some(OnOffAction::Off) => {
+            sb.set_night_mode(false)?;
+            println!("Night Mode: off");
+        }
+        Some(OnOffAction::Toggle) => {
+            let on = sb.toggle_night_mode()?;
+            println!("Night Mode: {}", if on { "on" } else { "off" });
+        }
+    }
+    Ok(())
+}
+
 fn apply_levels(sb: &mut Soundbar, target: Option<&LevelCmd>) -> Result<()> {
     match target {
         Some(LevelCmd::Bass { level }) => apply_bass(sb, *level),
@@ -1887,7 +2094,12 @@ fn diff_info(sb: &mut Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) -
                         format!("{name} ({})", b[0])
                     }
                     Some(b)
-                        if (h == H_POWER_LIGHT || h == H_AUTO_HDMI || h == H_MUTE)
+                        if (h == H_POWER_LIGHT
+                            || h == H_AUTO_HDMI
+                            || h == H_MUTE
+                            || h == H_VIRTUAL_X
+                            || h == H_TRUVOLUME
+                            || h == H_NIGHT_MODE)
                             && b.len() == 1 =>
                     {
                         if b[0] != 0 {
@@ -1971,7 +2183,12 @@ fn diff_all(sb: &mut Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) -> 
                             .map(|m| m.as_str())
                             .unwrap_or("unknown");
                         format!("{name} ({})", b[0])
-                    } else if (h == H_POWER_LIGHT || h == H_AUTO_HDMI || h == H_MUTE)
+                    } else if (h == H_POWER_LIGHT
+                        || h == H_AUTO_HDMI
+                        || h == H_MUTE
+                        || h == H_VIRTUAL_X
+                        || h == H_TRUVOLUME
+                        || h == H_NIGHT_MODE)
                         && b.len() == 1
                     {
                         if b[0] != 0 {
@@ -2028,6 +2245,10 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
         DeviceCmd::PowerLight { action } => apply_power_light(sb, action.as_ref()),
         DeviceCmd::AutoHdmi { action } => apply_auto_hdmi(sb, action.as_ref()),
         DeviceCmd::AvDelay { delay } => apply_av_delay(sb, *delay),
+        DeviceCmd::Dialog { level } => apply_dialog(sb, *level),
+        DeviceCmd::VirtualX { action } => apply_virtual_x(sb, action.as_ref()),
+        DeviceCmd::TruVolume { action } => apply_truvolume(sb, action.as_ref()),
+        DeviceCmd::NightMode { action } => apply_night_mode(sb, action.as_ref()),
         DeviceCmd::Levels { target } => apply_levels(sb, target.as_ref()),
         DeviceCmd::Bass { level } => apply_bass(sb, *level),
         DeviceCmd::Treble { level } => apply_treble(sb, *level),
@@ -2067,6 +2288,7 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
          eq [movie|music|game|direct], surr [off|on|dual|front], elev [up|wide|auto], \
          color [off|rainbow|...], levels, bass [n], treble [n], center [n], sub [n], \
+         dialog [0-10], vx [on|off], truvol [on|off], night [on|off], \
          power-light [on|off], hdmi [on|off], delay [0-8], d / diff [all], snap, \
          disc / disconnect, rec / reconnect, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );

@@ -1,8 +1,10 @@
 # vizio-ctl
 
-Control a VIZIO Elevate soundbar over Bluetooth LE from Windows 10/11.
+Control a VIZIO Elevate SE Soundbar over Bluetooth LE.
 
-Only tested with VIZIO Elevate SE (Model: SL512X-0806).
+Only supported on Windows 10/11 (at the moment).
+
+Only tested with [VIZIO Elevate SE Soundbar (SL512X-0806)](https://www.vizio.com/en/sound-bar/sb/SL512X-0806).
 
 ## Build
 
@@ -91,7 +93,7 @@ To reverse-engineer unknown settings (EQ modes, inputs, bass/treble, surround mo
 | 5    | read      | 0x00c5 | 8-char session token, e.g. `"371FD047"`                                           |
 | vol  | write cmd | 0x0079 | `"<token>:" <level>` → notify 0x0079 = `<level>`                                  |
 | mute | write cmd | 0x006a | `"<token>:" 01` (mute) / `00` (unmute)                                            |
-| eq   | write cmd | 0x0076 | `"<token>:" 00` (movie) / `01` (music) / `02` (game) / `03` (direct)             |
+| eq   | write cmd | 0x0076 | `"<token>:" 00` (movie) / `01` (music) / `02` (game) / `03` (direct)              |
 
 The 14 trailing auth bytes were identical in two sessions with different challenges, so they're replayed as-is.
 Volume values are absolute levels (the app sends 0x15, 0x16, 0x17... for each "+" press), but the soundbar
