@@ -31,9 +31,11 @@ const H_DEVICE_NAME: u16 = 0x0054;
 const H_DEVICE_TAG: u16 = 0x0056;
 const H_MUTE: u16 = 0x006a;
 const H_EQ: u16 = 0x0076;
+const H_SURROUND: u16 = 0x00ab;
 const H_VOLUME: u16 = 0x0079;
 const H_MODE_7C: u16 = 0x007c;
 const H_STATE_82: u16 = 0x0082;
+const H_EVENT_8F: u16 = 0x008f;
 const H_AUTH_STATUS: u16 = 0x00bf;
 const H_AUTH_CHALLENGE: u16 = 0x00c2;
 const H_AUTH_RESPONSE: u16 = 0x00c5;
@@ -46,9 +48,11 @@ pub const KNOWN_HANDLES: &[u16] = &[
     H_DEVICE_TAG,
     H_MUTE,
     H_EQ,
+    H_SURROUND,
     H_VOLUME,
     H_MODE_7C,
     H_STATE_82,
+    H_EVENT_8F,
     H_AUTH_STATUS,
     H_AUTH_CHALLENGE,
     H_AUTH_RESPONSE,
@@ -68,10 +72,12 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_VOLUME, "Volume", Fmt::U8),
     (H_MUTE, "Mute", Fmt::Bool),
     (H_EQ, "EQ Mode", Fmt::Eq),
+    (H_SURROUND, "Surround Mode", Fmt::Surround),
     (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
     (H_INPUT_GUESS, "0x0052 (unknown, maybe input)", Fmt::U8),
     (H_MODE_7C, "0x007c (unknown)", Fmt::U8),
     (0x0085, "0x0085 (unknown)", Fmt::U8),
+    (H_EVENT_8F, "0x008f (unknown)", Fmt::U8),
     (0x0064, "0x0064 (unknown)", Fmt::U8),
     (0x007f, "0x007f (unknown)", Fmt::U8),
     (0x00ae, "0x00ae (unknown)", Fmt::U8),
@@ -84,6 +90,7 @@ enum Fmt {
     U8,
     Bool,
     Eq,
+    Surround,
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +163,12 @@ enum DeviceCmd {
         /// Mode to set (movie, music, game, direct). Omit to print current
         /// mode.
         mode: Option<EqMode>,
+    },
+    /// Get or set the surround mode.
+    #[command(alias = "surr")]
+    Surround {
+        /// Mode to set (off, on, dual, front). Omit to print current mode.
+        mode: Option<SurroundMode>,
     },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
     Read { handle: String },
@@ -307,6 +320,61 @@ impl std::str::FromStr for EqMode {
     }
 }
 
+/// Surround mode preset.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurroundMode {
+    /// Surround sound off.
+    Off = 0,
+    /// Surround sound on.
+    On = 1,
+    /// Dual surround mode.
+    Dual = 2,
+    /// Front surround mode.
+    #[value(alias = "frnt")]
+    Front = 3,
+}
+
+impl SurroundMode {
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Off),
+            1 => Some(Self::On),
+            2 => Some(Self::Dual),
+            3 => Some(Self::Front),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::On => "On",
+            Self::Dual => "Dual",
+            Self::Front => "Front",
+        }
+    }
+}
+
+impl std::fmt::Display for SurroundMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for SurroundMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "0" | "off" => Ok(Self::Off),
+            "1" | "on" => Ok(Self::On),
+            "2" | "dual" => Ok(Self::Dual),
+            "3" | "front" | "frnt" => Ok(Self::Front),
+            _ => bail!("unknown surround mode {s:?} (expected off, on, dual, or front)"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -404,7 +472,18 @@ impl Soundbar {
                     print!("\r[EQ mode changed to {s}]\nvizio> ");
                     let _ = std::io::stdout().flush();
                 }
-            } else if live_pr.load(Ordering::SeqCst) && handle != H_AUTH_STATUS {
+            } else if handle == H_SURROUND && v.len() == 1 {
+                if live_pr.load(Ordering::SeqCst) {
+                    let s = SurroundMode::from_u8(v[0])
+                        .map(|m| m.as_str())
+                        .unwrap_or("unknown");
+                    print!("\r[surround mode changed to {s}]\nvizio> ");
+                    let _ = std::io::stdout().flush();
+                }
+            } else if live_pr.load(Ordering::SeqCst)
+                && handle != H_AUTH_STATUS
+                && handle != H_EVENT_8F
+            {
                 print!("\r[notify 0x{handle:04x} -> {}]\nvizio> ", hex(&v));
                 let _ = std::io::stdout().flush();
             }
@@ -484,6 +563,7 @@ impl Soundbar {
         let _ = self.subscribe(H_VOLUME);
         let _ = self.subscribe(H_MUTE);
         let _ = self.subscribe(H_EQ);
+        let _ = self.subscribe(H_SURROUND);
 
         let tag = self.read(H_DEVICE_TAG).unwrap_or_default();
         self.drain();
@@ -615,6 +695,22 @@ impl Soundbar {
         self.eq()
     }
 
+    fn surround(&self) -> Result<SurroundMode> {
+        let v = self.read(H_SURROUND)?;
+        let byte = v
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("empty surround mode value"))?;
+        SurroundMode::from_u8(byte).ok_or_else(|| anyhow!("unknown surround mode byte: {byte}"))
+    }
+
+    fn set_surround(&self, mode: SurroundMode) -> Result<SurroundMode> {
+        self.drain();
+        self.write_cmd(H_SURROUND, &[mode as u8])?;
+        let _ = self.wait_notify(H_SURROUND, Duration::from_millis(500));
+        self.surround()
+    }
+
     fn snapshot_info(&self) -> HashMap<u16, Vec<u8>> {
         let mut map = HashMap::new();
         for &(h, _, _) in INFO_FIELDS {
@@ -699,6 +795,15 @@ impl Soundbar {
                     Fmt::Eq => {
                         if let Some(&byte) = v.first() {
                             if let Some(mode) = EqMode::from_u8(byte) {
+                                println!("{label:<13}: {mode} ({byte})");
+                            } else {
+                                println!("{label:<13}: unknown ({byte})");
+                            }
+                        }
+                    }
+                    Fmt::Surround => {
+                        if let Some(&byte) = v.first() {
+                            if let Some(mode) = SurroundMode::from_u8(byte) {
                                 println!("{label:<13}: {mode} ({byte})");
                             } else {
                                 println!("{label:<13}: unknown ({byte})");
@@ -831,6 +936,20 @@ fn apply_eq(sb: &Soundbar, mode: Option<EqMode>) -> Result<()> {
     Ok(())
 }
 
+fn apply_surround(sb: &Soundbar, mode: Option<SurroundMode>) -> Result<()> {
+    match mode {
+        Some(m) => {
+            let res = sb.set_surround(m)?;
+            println!("Surround Mode: {res} ({})", res as u8);
+        }
+        None => {
+            let res = sb.surround()?;
+            println!("Surround Mode: {res} ({})", res as u8);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_monitor(sb: &mut Soundbar) -> Result<()> {
     let handles: Vec<u16> = sb
         .conn
@@ -920,6 +1039,12 @@ fn diff_info(sb: &Soundbar, snap_info: &mut Option<HashMap<u16, Vec<u8>>>) {
                             .unwrap_or("unknown");
                         format!("{name} ({})", b[0])
                     }
+                    Some(b) if h == H_SURROUND && b.len() == 1 => {
+                        let name = SurroundMode::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
+                    }
                     Some(b) if b.len() == 1 => format!("{} (0x{:02x})", b[0], b[0]),
                     Some(b) => hex(b),
                     None => "<none>".to_string(),
@@ -968,6 +1093,11 @@ fn diff_all(sb: &Soundbar, snap_all: &mut Option<HashMap<u16, Vec<u8>>>) {
                             .map(|m| m.as_str())
                             .unwrap_or("unknown");
                         format!("{name} ({})", b[0])
+                    } else if h == H_SURROUND && b.len() == 1 {
+                        let name = SurroundMode::from_u8(b[0])
+                            .map(|m| m.as_str())
+                            .unwrap_or("unknown");
+                        format!("{name} ({})", b[0])
                     } else if b.len() == 1 {
                         format!("{} (0x{:02x})", b[0], b[0])
                     } else {
@@ -1001,6 +1131,7 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
             apply_mute(sb, action.as_ref().unwrap_or(&MuteAction::Toggle))
         }
         DeviceCmd::Eq { mode } => apply_eq(sb, *mode),
+        DeviceCmd::Surround { mode } => apply_surround(sb, *mode),
         DeviceCmd::Read { handle } => {
             let v = sb.read(parse_handle(handle)?)?;
             println!("{}  \"{}\"", hex(&v), printable(&v));
@@ -1031,7 +1162,7 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
 fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
     println!(
         "Commands: + / up [n], - / down [n], <number> / set <n>, get, m / mute [on|off], \
-         eq [movie|music|game|direct], d / diff [all], snap, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
+         eq [movie|music|game|direct], surr [off|on|dual|front], d / diff [all], snap, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );
     let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
     let mut snap_all: Option<HashMap<u16, Vec<u8>>> = None;
