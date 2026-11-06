@@ -26,12 +26,19 @@ use clap::Subcommand;
 // Protocol constants
 // ---------------------------------------------------------------------------
 
+const H_MODEL: u16 = 0x004a;
+const H_SERIAL: u16 = 0x004c;
+const H_FIRMWARE: u16 = 0x004e;
+const H_AUDIO_FORMAT: u16 = 0x0050;
+/// Read-only system state (0x0052). Value is 0x01 when active; writes rejected
+/// by hardware (0x80650003).
 const H_STATE_52: u16 = 0x0052;
 const H_DEVICE_NAME: u16 = 0x0054;
 const H_DEVICE_TAG: u16 = 0x0056;
 const H_POWER_LIGHT: u16 = 0x0064;
 const H_MUTE: u16 = 0x006a;
 const H_AV_DELAY: u16 = 0x006d;
+const H_FACTORY_RESET: u16 = 0x0070;
 const H_EQ: u16 = 0x0076;
 const H_VOLUME: u16 = 0x0079;
 const H_INPUT: u16 = 0x007c;
@@ -57,12 +64,17 @@ const H_AUTH_RESPONSE: u16 = 0x00c5;
 /// Handles used to auto-detect how Windows' `AttributeHandle` maps to ATT value
 /// handles.
 pub const KNOWN_HANDLES: &[u16] = &[
+    H_MODEL,
+    H_SERIAL,
+    H_FIRMWARE,
+    H_AUDIO_FORMAT,
     H_STATE_52,
     H_DEVICE_NAME,
     H_DEVICE_TAG,
     H_POWER_LIGHT,
     H_MUTE,
     H_AV_DELAY,
+    H_FACTORY_RESET,
     H_EQ,
     H_VOLUME,
     H_INPUT,
@@ -95,6 +107,10 @@ const MAX_VOLUME: u8 = 100;
 
 /// Characteristics the app polls after authenticating.
 const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
+    (H_MODEL, "Model", Fmt::Str),
+    (H_SERIAL, "Serial", Fmt::Str),
+    (H_FIRMWARE, "Firmware", Fmt::Str),
+    (H_AUDIO_FORMAT, "Audio format", Fmt::Str),
     (H_DEVICE_NAME, "Device name", Fmt::Str),
     (H_DEVICE_TAG, "Device tag", Fmt::Str),
     (H_VOLUME, "Volume", Fmt::U8),
@@ -118,7 +134,7 @@ const INFO_FIELDS: &[(u16, &str, Fmt)] = &[
     (H_LEVEL_BALANCE, "Surround Balance", Fmt::I8),
     (H_INPUT, "Input Source", Fmt::Input),
     (H_STATE_82, "0x0082 (unknown)", Fmt::U8),
-    (H_STATE_52, "0x0052 (unknown)", Fmt::U8),
+    (H_STATE_52, "0x0052 (unknown, read-only)", Fmt::U8),
 ];
 
 /// Characteristics subscribed to for notifications upon authentication.
@@ -335,6 +351,13 @@ enum DeviceCmd {
     SurroundBalance {
         #[arg(allow_negative_numbers = true)]
         balance: Option<i8>,
+    },
+    /// Factory reset the soundbar (restores all settings to factory defaults).
+    #[command(alias = "reset")]
+    FactoryReset {
+        /// Confirm factory reset without an interactive prompt.
+        #[arg(long)]
+        yes_really: bool,
     },
     /// Read a raw characteristic by ATT value handle (e.g. 0x0079).
     Read { handle: String },
@@ -625,7 +648,10 @@ fn format_enum_val<T: VizioEnum + std::fmt::Display>(v: &[u8], detailed: bool) -
 
 fn format_setting_value(fmt: Fmt, handle: u16, v: &[u8], detailed: bool) -> String {
     match fmt {
-        Fmt::Str => String::from_utf8_lossy(v).to_string(),
+        Fmt::Str => String::from_utf8_lossy(v)
+            .trim_end_matches('\0')
+            .trim()
+            .to_string(),
         Fmt::U8 if v.len() == 1 => format!("{}", v[0]),
         Fmt::U8 => hex(v),
         Fmt::I8 if v.len() == 1 => fmt_level(v[0] as i8),
@@ -1376,6 +1402,25 @@ fn apply_level(sb: &mut Soundbar, name: &str, handle: u16, level: Option<i8>) ->
     Ok(())
 }
 
+fn apply_factory_reset(sb: &mut Soundbar, yes_really: bool) -> Result<()> {
+    if !yes_really {
+        print!(
+            "Are you sure you want to factory reset the soundbar? This will wipe all settings. [y/N]: "
+        );
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let trimmed = answer.trim();
+        if !trimmed.eq_ignore_ascii_case("y") && !trimmed.eq_ignore_ascii_case("yes") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+    sb.write_cmd(H_FACTORY_RESET, &[0])?;
+    println!("Factory reset initiated. The soundbar will restore defaults and reboot.");
+    Ok(())
+}
+
 fn apply_levels(sb: &mut Soundbar, target: Option<&LevelCmd>) -> Result<()> {
     match target {
         Some(LevelCmd::Bass { level }) => apply_level(sb, "Bass", H_LEVEL_BASS, *level),
@@ -1613,6 +1658,7 @@ fn execute_device_cmd(sb: &mut Soundbar, cmd: &DeviceCmd) -> Result<()> {
         DeviceCmd::SurroundBalance { balance } => {
             apply_level(sb, "Surround Balance", H_LEVEL_BALANCE, *balance)
         }
+        DeviceCmd::FactoryReset { yes_really } => apply_factory_reset(sb, *yes_really),
         DeviceCmd::Read { handle } => {
             let v = sb.read(parse_handle(handle)?)?;
             println!("{}  \"{}\"", hex(&v), printable(&v));
@@ -1646,7 +1692,7 @@ fn cmd_shell(sb: &mut Soundbar) -> Result<()> {
          in / input [bluetooth|hdmi-earc], eq [movie|music|game|direct], surr [off|on|dual|front], \
          elev [up|wide|auto], color [off|rainbow|...], levels, bass [n], treble [n], \
          center [n], sub [n], dialog [0-10], vx [on|off], truvol [on|off], night [on|off], \
-         power-light [on|off], hdmi [on|off], delay [0-8], d / diff [all], snap, \
+         power-light [on|off], hdmi [on|off], delay [0-8], reset [--yes-really], d / diff [all], snap, \
          disc / disconnect, rec / reconnect, watch, info, dump, read <h>, write <h> <hex>, q (or 'help')"
     );
     let mut snap_info: Option<HashMap<u16, Vec<u8>>> = None;
