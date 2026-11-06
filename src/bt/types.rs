@@ -6,13 +6,15 @@ use std::sync::Arc;
 use anyhow::Result;
 use anyhow::bail;
 
-/// Callback invoked when a characteristic notification or indication is received.
+/// Callback invoked when a characteristic notification or indication is
+/// received.
 pub type NotifyHandler = Arc<dyn Fn(u16, Vec<u8>) + Send + Sync>;
 
 /// 128-bit Bluetooth UUID.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BleUuid {
-    /// First 32 bits (contains 16-bit short UUID for standard Bluetooth SIG UUIDs).
+    /// First 32 bits (contains 16-bit short UUID for standard Bluetooth SIG
+    /// UUIDs).
     pub data1: u32,
     /// Next 16 bits.
     pub data2: u16,
@@ -23,7 +25,8 @@ pub struct BleUuid {
 }
 
 impl BleUuid {
-    /// Returns the 16-bit short UUID if this UUID is based on the Bluetooth SIG base UUID.
+    /// Returns the 16-bit short UUID if this UUID is based on the Bluetooth SIG
+    /// base UUID.
     pub fn short_uuid(&self) -> Option<u16> {
         const BASE_TAIL: [u8; 8] = [0x80, 0x00, 0x00, 0x80, 0x5f, 0x9b, 0x34, 0xfb];
         (self.data1 <= 0xffff && self.data2 == 0 && self.data3 == 0x1000 && self.data4 == BASE_TAIL)
@@ -155,7 +158,8 @@ pub fn fmt_addr(a: u64) -> String {
         .join(":")
 }
 
-/// Parse a Bluetooth address string in hex form (with or without colons/dashes).
+/// Parse a Bluetooth address string in hex form (with or without
+/// colons/dashes).
 pub fn parse_addr(s: &str) -> Result<u64> {
     let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if hex.len() != 12 {

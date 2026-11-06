@@ -1,4 +1,5 @@
-//! Windows implementation of Bluetooth LE hardware abstraction layer using WinRT.
+//! Windows implementation of Bluetooth LE hardware abstraction layer using
+//! WinRT.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -332,7 +333,8 @@ pub struct BleConnection {
 }
 
 impl BleConnection {
-    /// Connect to the device and enumerate its GATT services and characteristics.
+    /// Connect to the device and enumerate its GATT services and
+    /// characteristics.
     pub fn connect(cli: &Cli, notify_handler: NotifyHandler) -> Result<Self> {
         let device = find_device(cli)?;
         let addr = device.BluetoothAddress()?;
@@ -368,7 +370,8 @@ impl BleConnection {
         let mut chars = Vec::new();
         let mut denied = 0;
         for svc in &services {
-            // Open shared so several vizio-ctl instances (or other apps) can coexist.
+            // Open shared so several vizio-ctl instances (or other apps) can
+            // coexist.
             let _ = svc
                 .OpenAsync(GattSharingMode::SharedReadAndWrite)
                 .and_then(|op| op.join());
@@ -593,7 +596,8 @@ impl BleConnection {
             .unwrap_or(false)
     }
 
-    /// Returns handle offset between Windows AttributeHandle and ATT value handle.
+    /// Returns handle offset between Windows AttributeHandle and ATT value
+    /// handle.
     pub fn handle_offset(&self) -> i32 {
         self.offset
     }
