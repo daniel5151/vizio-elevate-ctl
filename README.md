@@ -1,6 +1,6 @@
 # VIZIO Elevate BLE Home Assistant Integration
 
-A local, push-based Home Assistant custom component for the **VIZIO Elevate Soundbar** (tested with [VIZIO Elevate SE SL512X-0806](https://www.vizio.com/en/sound-bar/sb/SL512X-0806)) over Bluetooth Low Energy (BLE).
+A local, push-based Home Assistant custom integration for the **VIZIO Elevate Soundbar** (tested with [VIZIO Elevate SE SL512X-0806](https://www.vizio.com/en/sound-bar/sb/SL512X-0806)) over Bluetooth Low Energy (BLE).
 
 ![VIZIO Elevate in Home Assistant](screenshot.png)
 
@@ -70,40 +70,24 @@ To ensure BlueZ permanently saves the Long Term Key (LTK) and marks the trust fl
 
 ## Installation
 
+### Via HACS (Custom Repository)
+1. In Home Assistant, open **HACS**.
+2. Click the three dots (⋮) in the top right corner and select **Custom repositories**.
+3. Enter `https://github.com/daniel5151/vizio-elevate-ctl` and select **Integration** as the category.
+4. Click **Add**, find **VIZIO Elevate Soundbar (Bluetooth LE)**, and click **Download**.
+5. Restart Home Assistant.
+6. Add and configure the integration:
+   * Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Add Integration** and search for **VIZIO Elevate Soundbar (Bluetooth LE)** (or click the badge below):
+
+   [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=vizio_elevate_ble)
+
+### Manual Installation
 1. Copy the `custom_components/vizio_elevate_ble` directory into your Home Assistant config folder:
    ```text
    /config/custom_components/vizio_elevate_ble/
    ```
 2. Restart Home Assistant.
-3. The soundbar will either be auto-discovered as a Bluetooth device or you can manually add it:
-   * Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Add Integration**
-   * Search for **VIZIO Elevate Soundbar (Bluetooth LE)**
-   * Select your soundbar from the list and confirm.
-
----
-
-## How It Works
-
-### Standalone Protocol Client (`client.py`)
-The underlying client has zero Home Assistant dependencies and uses `bleak` + `bleak_retry_connector`. It handles:
-
-1. **Dynamic GATT Handle Resolution**:
-   Different OS Bluetooth stacks (BlueZ, Windows WinRT, macOS CoreBluetooth) report ATT handles with differing offsets relative to value handles. The client scores characteristic handles against known signatures (`score(offset)`) to align with the soundbar's internal GATT table.
-
-2. **Challenge/Response Authentication**:
-   * Subscribes to `0x00bf` (Auth Status notification).
-   * Reads `0x0056` (Device Tag).
-   * Writes the static Client ID (`1:f4c46a1e-4e22-`) to `0x00c2`.
-   * Reads a 4-character ASCII challenge from `0x00c2`.
-   * Writes `<challenge>:<AUTH_SUFFIX>` to `0x00c5`.
-   * Reads the resulting 8-character session token from `0x00c5`.
-   * All subsequent control writes prepend `<token>:` to the payload.
-
-3. **Step-Walking Volume**:
-   The soundbar firmware rejects jumps larger than 1 step per write (writing `15` when currently at `10` only increments to `11`). A background async task walks toward the requested volume target 1 step at a time, awaiting notification confirmation on each step.
-
-4. **Live GATT Notifications**:
-   Subscribes to all notification-capable characteristics once authenticated. When settings are changed using the physical infrared/Bluetooth remote, updates are pushed directly to Home Assistant in real time.
+3. Add the integration from **Settings -> Devices & Services -> Add Integration** and search for **VIZIO Elevate Soundbar (Bluetooth LE)**.
 
 ---
 
@@ -119,7 +103,7 @@ Click **Configure** on the VIZIO Elevate card under **Settings -> Devices & Serv
 
 ---
 
-## Standalone Diagnostics (`tools/probe.py`)
+## Standalone Python Diagnostics (`tools/probe.py`)
 
 You can verify the client and read all settings from any machine with Python and Bleak before involving Home Assistant:
 
@@ -127,3 +111,11 @@ You can verify the client and read all settings from any machine with Python and
 pip install bleak bleak-retry-connector
 python tools/probe.py
 ```
+
+---
+
+## Windows CLI & Protocol Reverse Engineering (`cli/`)
+
+A standalone Windows 10/11 Rust CLI tool for direct control, interactive shell, GATT diffing, and reverse engineering is located in [`cli/`](cli/).
+
+See [`cli/README.md`](cli/README.md) for build instructions, CLI usage, and the reverse-engineered GATT protocol details.
