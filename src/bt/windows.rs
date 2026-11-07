@@ -99,7 +99,7 @@ fn convert_props(p: u32) -> GattProps {
 fn config_file() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("vizio-ctl.toml")))
+        .and_then(|p| p.parent().map(|d| d.join("vizio-elevate-ctl.toml")))
 }
 
 fn load_cached_addr() -> Option<u64> {
@@ -370,8 +370,8 @@ impl BleConnection {
         let mut chars = Vec::new();
         let mut denied = 0;
         for svc in &services {
-            // Open shared so several vizio-ctl instances (or other apps) can
-            // coexist.
+            // Open shared so several vizio-elevate-ctl instances (or other
+            // apps) can coexist.
             let _ = svc
                 .OpenAsync(GattSharingMode::SharedReadAndWrite)
                 .and_then(|op| op.join());
@@ -435,7 +435,7 @@ impl BleConnection {
             if denied > 0 {
                 bail!(
                     "access denied to {denied} GATT service(s) - another program (e.g. an older \
-                     `vizio-ctl shell` still running) has the soundbar open exclusively. Close it and retry."
+                     `vizio-elevate-ctl shell` still running) has the soundbar open exclusively. Close it and retry."
                 );
             }
             eprintln!(

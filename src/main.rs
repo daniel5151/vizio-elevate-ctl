@@ -1,4 +1,4 @@
-//! vizio-ctl: control a VIZIO Elevate soundbar over Bluetooth LE
+//! vizio-elevate-ctl: control a VIZIO Elevate soundbar over Bluetooth LE
 
 mod bt;
 

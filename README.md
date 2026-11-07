@@ -1,4 +1,4 @@
-# vizio-ctl
+# vizio-elevate-ctl
 
 Control a VIZIO Elevate SE Soundbar over Bluetooth LE.
 
@@ -6,11 +6,17 @@ Only supported on Windows 10/11 (at the moment).
 
 Only tested with [VIZIO Elevate SE Soundbar (SL512X-0806)](https://www.vizio.com/en/sound-bar/sb/SL512X-0806).
 
+> [!NOTE]
+>
+> This is 100% free range Gemini 3.8 vibe code.
+>
+> Manually tested and verified by a human, of course, but still - you've been warned.
+
 ## Build
 
 ```powershell
 cargo build --release
-# binary: target\release\vizio-ctl.exe
+# binary: target\release\vizio-elevate-ctl.exe
 ```
 
 ## Usage
@@ -19,25 +25,25 @@ cargo build --release
 > typically only accepts one BLE connection at a time.
 
 ```powershell
-vizio-ctl scan                 # list paired + nearby BLE devices (looks for "VIZIO")
-vizio-ctl pair                 # optional OS-level pairing
-vizio-ctl info                 # connect, authenticate, print device info/state
-vizio-ctl volume               # print volume
-vizio-ctl volume set 25
-vizio-ctl volume up 3
-vizio-ctl volume down
-vizio-ctl mute                 # toggle mute (or on, off, get)
-vizio-ctl eq                   # print current EQ mode
-vizio-ctl eq movie             # set EQ mode (movie, music, game, direct)
-vizio-ctl shell                # interactive; keeps connection open (+, -, m, eq, diff, watch, get, q)
-vizio-ctl dump                 # every service/characteristic with ATT handles + values
-vizio-ctl monitor              # print all notifications
-vizio-ctl read 0x0076          # raw read
-vizio-ctl write 0x006a 01      # raw write (session token prefix added automatically)
+vizio-elevate-ctl scan                 # list paired + nearby BLE devices (looks for "VIZIO")
+vizio-elevate-ctl pair                 # optional OS-level pairing
+vizio-elevate-ctl info                 # connect, authenticate, print device info/state
+vizio-elevate-ctl volume               # print volume
+vizio-elevate-ctl volume set 25
+vizio-elevate-ctl volume up 3
+vizio-elevate-ctl volume down
+vizio-elevate-ctl mute                 # toggle mute (or on, off, get)
+vizio-elevate-ctl eq                   # print current EQ mode
+vizio-elevate-ctl eq movie             # set EQ mode (movie, music, game, direct)
+vizio-elevate-ctl shell                # interactive; keeps connection open (+, -, m, eq, diff, watch, get, q)
+vizio-elevate-ctl dump                 # every service/characteristic with ATT handles + values
+vizio-elevate-ctl monitor              # print all notifications
+vizio-elevate-ctl read 0x0076          # raw read
+vizio-elevate-ctl write 0x006a 01      # raw write (session token prefix added automatically)
 ```
 
 Global flags: `--address AA:BB:CC:DD:EE:FF`, `--name VIZIO`, `--scan-secs 10`, `-v` (log all GATT traffic).
-The address is remembered in `vizio-ctl.toml` next to the executable after the first successful connection.
+The address is remembered in `vizio-elevate-ctl.toml` next to the executable after the first successful connection.
 
 ## Discovering Features via Remote
 
@@ -45,7 +51,7 @@ To reverse-engineer unknown settings (EQ modes, inputs, bass/treble, surround mo
 
 1. Launch the interactive shell:
    ```powershell
-   vizio-ctl shell
+   vizio-elevate-ctl shell
    ```
 2. **Diffing state (`diff` / `d`)**:
    - Run `diff` (or `d`) to establish a baseline snapshot of known fields:
@@ -97,6 +103,6 @@ To reverse-engineer unknown settings (EQ modes, inputs, bass/treble, surround mo
 
 The 14 trailing auth bytes were identical in two sessions with different challenges, so they're replayed as-is.
 Volume values are absolute levels (the app sends 0x15, 0x16, 0x17... for each "+" press), but the soundbar
-only moves **one step per write** toward the requested value (writing 11 at volume 8 yields 9). `vizio-ctl`
+only moves **one step per write** toward the requested value (writing 11 at volume 8 yields 9). `vizio-elevate-ctl`
 therefore walks to the target one level at a time, waiting for each 0x0079 confirmation notification.
 Use `--max-volume N` to cap how high it will go.

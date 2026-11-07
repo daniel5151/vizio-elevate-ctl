@@ -1,8 +1,8 @@
 [package]
-name = "vizio-ctl"
+name = "vizio-elevate-ctl"
 version = "0.1.0"
 edition = "2024"
-description = "Control a VIZIO Elevate soundbar over Bluetooth LE from Windows"
+description = "Control a VIZIO Elevate SE soundbar over Bluetooth LE from Windows"
 
 [dependencies]
 anyhow = "1"
