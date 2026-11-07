@@ -1,0 +1,100 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Choose a soundbar",
+        "description": "Before adding this soundbar, you must pair and trust it at the OS level (e.g. using `bluetoothctl` in the terminal: `pair <MAC>` followed by `trust <MAC>`), then reboot your Home Assistant host. Also make sure the VIZIO mobile app is closed and your phone is disconnected.\n\n{error}",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Set up {name}?\n\nIMPORTANT: Before proceeding, ensure you have paired and trusted the soundbar at the host OS level using `bluetoothctl` (`pair <MAC>` then `trust <MAC>`), and rebooted your Home Assistant host machine so the bond persists. Ensure the VIZIO mobile app is closed and your phone is disconnected.\n\n{error}"
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect or authenticate. Ensure the soundbar was paired and trusted in bluetoothctl, the host machine was rebooted, and no other device/phone is connected."
+    },
+    "abort": {
+      "already_configured": "This soundbar is already configured.",
+      "no_devices_found": "No VIZIO soundbars found nearby."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "VIZIO Elevate options",
+        "data": {
+          "disconnect_when_idle": "Disconnect when idle (lets the VIZIO mobile app connect)",
+          "max_volume": "Maximum volume limit (1-100)"
+        },
+        "data_description": {
+          "disconnect_when_idle": "Off (default): Home Assistant stays connected, so volume changes from the remote show up instantly, but the soundbar can't be used by the VIZIO mobile app at the same time. On: the link is dropped after 2 minutes without activity.",
+          "max_volume": "Device-level volume guard rail (default: 100). The Home Assistant volume slider scales from 0 to this limit (e.g. setting 40 means 100% on the slider maps to volume level 40)."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "audio_format": {
+        "name": "Audio format"
+      }
+    },
+    "select": {
+      "elevation_mode": {
+        "name": "Elevation mode"
+      },
+      "surround_mode": {
+        "name": "Surround mode"
+      },
+      "speaker_color": {
+        "name": "Speaker color"
+      }
+    },
+    "switch": {
+      "virtual_x": {
+        "name": "Virtual:X"
+      },
+      "truvolume": {
+        "name": "TruVolume"
+      },
+      "night_mode": {
+        "name": "Night mode"
+      },
+      "power_light": {
+        "name": "Power light"
+      },
+      "auto_hdmi": {
+        "name": "Auto HDMI"
+      }
+    },
+    "number": {
+      "bass": {
+        "name": "Bass"
+      },
+      "treble": {
+        "name": "Treble"
+      },
+      "center": {
+        "name": "Center level"
+      },
+      "subwoofer": {
+        "name": "Subwoofer level"
+      },
+      "surround_level": {
+        "name": "Surround level"
+      },
+      "surround_balance": {
+        "name": "Surround balance"
+      },
+      "clear_dialog": {
+        "name": "Clear dialog"
+      },
+      "av_delay": {
+        "name": "AV lip sync delay"
+      }
+    }
+  }
+}

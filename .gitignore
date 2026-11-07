@@ -1,4 +1,6 @@
 /target
 vizio-elevate-ctl.toml
 .agents
+__pycache__/
+*.py[cod]
 
