@@ -70,16 +70,27 @@ To ensure BlueZ permanently saves the Long Term Key (LTK) and marks the trust fl
 
 ## Installation
 
-### Via HACS (Custom Repository)
-1. In Home Assistant, open **HACS**.
+### Via Marketplace (Custom Repository)
+
+> [!NOTE]
+>
+> At the moment, this custom integration is _not_ discoverable publicly on the HA Marketplace.
+>
+> I would be more than happy to publish this project for easier discoverability if either one of the following criteria are met:
+>
+> - A handful of people have installed the extension, confirmed that it works, and/or help catch/fix any low-hanging bugs they find (please leave a comment at [daniel5151/vizio-elevate-ctl#1](https://github.com/daniel5151/vizio-elevate-ctl/issues/1))
+> - Someone volunteers to add support for another VIZIO soundbar variant
+>     * (the codebase needs some kind of disambiguation infrastructure to support multiple soundbar variants)
+>
+> Until then, please follow these instructions to install the extension by adding a custom repository.
+
+1. In Home Assistant, open **Marketplace**.
 2. Click the three dots (⋮) in the top right corner and select **Custom repositories**.
 3. Enter `https://github.com/daniel5151/vizio-elevate-ctl` and select **Integration** as the category.
 4. Click **Add**, find **VIZIO Elevate Soundbar (Bluetooth LE)**, and click **Download**.
 5. Restart Home Assistant.
 6. Add and configure the integration:
-   * Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Add Integration** and search for **VIZIO Elevate Soundbar (Bluetooth LE)** (or click the badge below):
-
-   [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=vizio_elevate_ble)
+   * Go to **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **Add Integration** and search for **VIZIO Elevate Soundbar (Bluetooth LE)**:
 
 ### Manual Installation
 1. Copy the `custom_components/vizio_elevate_ble` directory into your Home Assistant config folder:
@@ -119,3 +130,21 @@ python tools/probe.py
 A standalone Windows 10/11 Rust CLI tool for direct control, interactive shell, GATT diffing, and reverse engineering is located in [`cli/`](cli/).
 
 See [`cli/README.md`](cli/README.md) for build instructions, CLI usage, and the reverse-engineered GATT protocol details.
+
+---
+
+## Development Context
+
+One thing that's always bothered me about my VIZIO soundbar is that it doesn't report absolute volume over HDMI-eARC to my TV, making it nigh-impossible to write automations that set the volume to a known-good level (at least without spamming volume down and ramping it back up, hah).
+
+Of course, you can get absolute volume via the VIZIO mobile app...
+
+Fortunately, in 2026, LLMs make it *really easy* to reverse engineer protocols.
+
+After taking a quick `btsnoop` capture of Bluetooth traffic from my Android phone running the VIZIO app, my bot (Gemini 3.8 Flash) and I were able to quickly hack together a utility to pair and control the soundbar's volume from my PC (and shortly thereafter, hack together an MVP of a Home Assistant integration).
+
+...and then, because I couldn't help myself, I ended up spending a few more hours reverse engineering *every other setting* the soundbar exposes.
+
+That includes all sorts of fun things like equalizer settings, effect toggles, and my personal favorite: setting the color of the LEDs on the speakers (which might end up being a great sideband notification signal for other HA automations!)
+
+Based on my internet sleuthing, no one else has written any standalone tools or HA integrations for controlling these VIZIO soundbars over BLE. So, I figured I'd share this work with the community in case anyone else has the same (or similar) soundbar and wants to kick the tires or help extend it.
