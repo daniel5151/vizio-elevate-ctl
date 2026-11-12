@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homeassistant.components.number import NumberEntity, NumberEntityDescription, NumberMode
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -33,6 +34,7 @@ class VizioNumberDescription(NumberEntityDescription):
 NUMBERS: tuple[VizioNumberDescription, ...] = (
     VizioNumberDescription(
         key="bass",
+        translation_key="bass",
         name="Bass",
         icon="mdi:speaker",
         native_min_value=-10,
@@ -44,6 +46,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="treble",
+        translation_key="treble",
         name="Treble",
         icon="mdi:sine-wave",
         native_min_value=-10,
@@ -55,6 +58,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="center",
+        translation_key="center",
         name="Center Level",
         icon="mdi:speaker-message",
         native_min_value=-10,
@@ -66,6 +70,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="subwoofer",
+        translation_key="subwoofer",
         name="Subwoofer Level",
         icon="mdi:speaker",
         native_min_value=-10,
@@ -77,6 +82,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="surround_level",
+        translation_key="surround_level",
         name="Surround Level",
         icon="mdi:surround-sound",
         native_min_value=-10,
@@ -88,6 +94,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="surround_balance",
+        translation_key="surround_balance",
         name="Surround Balance",
         icon="mdi:scale-balance",
         native_min_value=-10,
@@ -99,6 +106,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="clear_dialog",
+        translation_key="clear_dialog",
         name="Clear Dialog",
         icon="mdi:account-voice",
         native_min_value=0,
@@ -110,6 +118,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
     ),
     VizioNumberDescription(
         key="av_delay",
+        translation_key="av_delay",
         name="AV Lip Sync Delay",
         icon="mdi:timer-sand",
         native_min_value=0,
@@ -118,6 +127,7 @@ NUMBERS: tuple[VizioNumberDescription, ...] = (
         mode=NumberMode.SLIDER,
         handle=H_AV_DELAY,
         is_signed=False,
+        entity_category=EntityCategory.CONFIG,
     ),
 )
 

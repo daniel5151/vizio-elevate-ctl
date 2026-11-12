@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -30,33 +31,40 @@ class VizioSwitchDescription(SwitchEntityDescription):
 SWITCHES: tuple[VizioSwitchDescription, ...] = (
     VizioSwitchDescription(
         key="virtual_x",
+        translation_key="virtual_x",
         name="Virtual:X",
         icon="mdi:surround-sound",
         handle=H_VIRTUAL_X,
     ),
     VizioSwitchDescription(
         key="truvolume",
+        translation_key="truvolume",
         name="TruVolume",
         icon="mdi:volume-vibrate",
         handle=H_TRUVOLUME,
     ),
     VizioSwitchDescription(
         key="night_mode",
+        translation_key="night_mode",
         name="Night Mode",
         icon="mdi:weather-night",
         handle=H_NIGHT_MODE,
     ),
     VizioSwitchDescription(
         key="power_light",
+        translation_key="power_light",
         name="Power Light",
         icon="mdi:led-on",
         handle=H_POWER_LIGHT,
+        entity_category=EntityCategory.CONFIG,
     ),
     VizioSwitchDescription(
         key="auto_hdmi",
+        translation_key="auto_hdmi",
         name="Auto HDMI",
         icon="mdi:hdmi-port",
         handle=H_AUTO_HDMI,
+        entity_category=EntityCategory.CONFIG,
     ),
 )
 

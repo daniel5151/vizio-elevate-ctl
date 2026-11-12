@@ -20,13 +20,13 @@ A local, push-based Home Assistant custom integration for the **VIZIO Elevate So
 * **Elevation & Audio Mode Selects (`select.py`)**:
   * **Elevation Mode**: `Auto`, `Up`, `Wide` (rotates the physical elevation speakers)
   * **Surround Mode**: `Off`, `On`, `Dual`, `Front`
-  * **Speaker LED Color**: `Off`, `Rainbow`, `Light Blue`, `Yellow`, `Purple`, `White`, `Cyan`, `Magenta`
+  * **Speaker LED Color**: `Off`, `Rainbow`, `Light Blue`, `Yellow`, `Purple`, `White`, `Cyan`, `Magenta` *(Configuration)*
 * **Audio Processing & Feature Toggles (`switch.py`)**:
   * **DTS Virtual:X** toggle
   * **DTS TruVolume** volume leveling
   * **Night Mode** dynamic range compression
-  * **Power Indicator Light** front LED
-  * **Auto HDMI** input switching
+  * **Power Indicator Light** front LED *(Configuration)*
+  * **Auto HDMI** input switching *(Configuration)*
 * **Level Sliders (`number.py`)**:
   * **Bass** (`-10` to `+10`)
   * **Treble** (`-10` to `+10`)
@@ -35,7 +35,7 @@ A local, push-based Home Assistant custom integration for the **VIZIO Elevate So
   * **Surround Level** (`-10` to `+10`)
   * **Surround Balance** (`-10` to `+10`)
   * **Clear Dialog** (`0` to `10`)
-  * **AV Lip Sync Delay** (`0` to `8`)
+  * **AV Lip Sync Delay** (`0` to `8`) *(Configuration)*
 
 ---
 

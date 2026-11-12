@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -25,6 +26,7 @@ class VizioElevationSelect(VizioElevateEntity, SelectEntity):
     """Select entity for elevation speaker position (Up, Wide, Auto)."""
 
     _attr_icon = "mdi:arrow-up-down"
+    _attr_translation_key = "elevation_mode"
     _attr_options = [mode.display_name for mode in ElevationMode]
 
     def __init__(self, entry: VizioConfigEntry) -> None:
@@ -44,6 +46,7 @@ class VizioSurroundSelect(VizioElevateEntity, SelectEntity):
     """Select entity for surround sound mode."""
 
     _attr_icon = "mdi:surround-sound"
+    _attr_translation_key = "surround_mode"
     _attr_options = [mode.display_name for mode in SurroundMode]
 
     def __init__(self, entry: VizioConfigEntry) -> None:
@@ -63,6 +66,8 @@ class VizioSpeakerColorSelect(VizioElevateEntity, SelectEntity):
     """Select entity for elevate speaker LED color."""
 
     _attr_icon = "mdi:palette"
+    _attr_translation_key = "speaker_color"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_options = [color.display_name for color in SpeakerColor]
 
     def __init__(self, entry: VizioConfigEntry) -> None:
